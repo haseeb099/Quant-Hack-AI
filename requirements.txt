@@ -1,0 +1,34 @@
+# QuantAI — Core Dependencies
+pydantic>=2.0
+pydantic-ai>=0.1
+logfire>=3.0
+anthropic>=0.40
+numpy>=1.26
+pandas>=2.1
+pyzmq>=25.0
+pyyaml>=6.0
+python-dotenv>=1.0
+
+# Technical Analysis (install TA-Lib separately on Windows)
+# pip install TA-Lib  — requires C library: https://github.com/cgohlke/talib-build/releases
+
+# Optional — Research & Learning
+scikit-learn>=1.3
+scipy>=1.11
+
+# MT5 development / MCP (optional — live trading uses ZeroMQ bridge)
+# pip install metatrader5-mcp MetaTrader5
+
+# Development
+pytest>=7.4
+pytest-asyncio>=0.23
+
+# Dashboard (optional)
+fastapi>=0.100
+uvicorn>=0.23
+pyarrow>=14.0
+httpx>=0.27
+websockets>=12.0
+
+# Notion sync (optional)
+notion-client>=2.2

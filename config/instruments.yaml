@@ -1,0 +1,106 @@
+# Competition instruments — 15 symbols
+instruments:
+  - symbol: BTC/USD
+    category: crypto
+    bias: bearish
+    allocation: 0.12
+    primary_agent: breakout_hunter
+    active: true
+
+  - symbol: ETH/USD
+    category: crypto
+    bias: bearish
+    allocation: 0.12
+    primary_agent: breakout_hunter
+    active: true
+
+  - symbol: SOL/USD
+    category: crypto
+    bias: bearish
+    allocation: 0.11
+    primary_agent: trend_surfer
+    active: true
+
+  - symbol: XRP/USD
+    category: crypto
+    bias: mixed
+    allocation: 0.04
+    primary_agent: mean_reversion
+    active: true
+
+  - symbol: BAR/USD
+    category: crypto
+    bias: mixed
+    allocation: 0.04
+    primary_agent: mean_reversion
+    active: true
+
+  - symbol: XAU/USD
+    category: metals
+    bias: bullish
+    allocation: 0.15
+    primary_agent: trend_surfer
+    active: true
+
+  - symbol: XAG/USD
+    category: metals
+    bias: bullish
+    allocation: 0.10
+    primary_agent: trend_surfer
+    active: true
+
+  - symbol: EUR/USD
+    category: forex
+    bias: range
+    allocation: 0.05
+    primary_agent: mean_reversion
+    active: true
+
+  - symbol: GBP/USD
+    category: forex
+    bias: range
+    allocation: 0.05
+    primary_agent: mean_reversion
+    active: true
+
+  - symbol: USD/JPY
+    category: forex
+    bias: range
+    allocation: 0.04
+    primary_agent: mean_reversion
+    active: true
+
+  - symbol: AUD/USD
+    category: forex
+    bias: range
+    allocation: 0.04
+    primary_agent: mean_reversion
+    active: true
+
+  - symbol: USD/CAD
+    category: forex
+    bias: range
+    allocation: 0.04
+    primary_agent: mean_reversion
+    active: true
+
+  - symbol: USD/CHF
+    category: forex
+    bias: range
+    allocation: 0.04
+    primary_agent: mean_reversion
+    active: true
+
+  - symbol: EUR/GBP
+    category: forex
+    bias: range
+    allocation: 0.03
+    primary_agent: mean_reversion
+    active: true
+
+  - symbol: EUR/CHF
+    category: forex
+    bias: range
+    allocation: 0.03
+    primary_agent: mean_reversion
+    active: true

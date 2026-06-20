@@ -1,0 +1,64 @@
+# Competition phase configuration
+phases:
+  round1:
+    name: Round 1 — Qualify
+    risk_multiplier: 1.2
+    target_return: "20-30%"
+    objective: maximize_return
+    start: "2026-06-21T22:00:00+01:00"
+    end: "2026-06-22T22:00:00+01:00"
+
+  round2:
+    name: Round 2 — Maintain
+    risk_multiplier: 1.0
+    target_return: "10-15%"
+    objective: protect_gains
+    start: "2026-06-22T22:00:00+01:00"
+    end: "2026-06-23T22:00:00+01:00"
+
+  round3:
+    name: Round 3 — Survive
+    risk_multiplier: 0.7
+    target_return: "5-10%"
+    objective: avoid_elimination
+    start: "2026-06-23T22:00:00+01:00"
+    end: "2026-06-24T22:00:00+01:00"
+
+  finals:
+    name: Finals — Win
+    risk_multiplier: 0.9
+    target_return: "balance"
+    objective: optimize_composite
+    start: "2026-06-24T22:00:00+01:00"
+    end: "2026-06-26T22:00:00+01:00"
+
+# Trading sessions (UTC)
+sessions:
+  asia:
+    start_hour: 0
+    end_hour: 8
+    preferred_instruments: [USD/JPY, AUD/USD, XAU/USD]
+    preferred_agents: [mean_reversion, trend_surfer]
+
+  london:
+    start_hour: 8
+    end_hour: 13
+    preferred_instruments: [EUR/USD, GBP/USD, XAU/USD]
+    preferred_agents: [breakout_hunter, trend_surfer]
+
+  ny:
+    start_hour: 13
+    end_hour: 21
+    preferred_instruments: [BTC/USD, ETH/USD, SOL/USD]
+    preferred_agents: [breakout_hunter, momentum_pulse]
+
+  overlap:
+    start_hour: 13
+    end_hour: 16
+    note: "Highest volatility — aggressive sizing in Round 1 only"
+
+# Decision cycle
+engine:
+  cycle_minutes: 15
+  feature_update_seconds: 60
+  timeframes: [M15, H1, H4]

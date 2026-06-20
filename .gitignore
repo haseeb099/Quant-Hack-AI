@@ -1,0 +1,51 @@
+# Environment
+.env
+.env.local
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Data
+data/
+*.db
+*.sqlite3
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# MT5
+*.ex5
+
+# Node / Frontend
+node_modules/
+frontend/dist/
+frontend/dist_bak_test/
+*.tsbuildinfo
+
+# Testing
+.pytest_cache/
+
+# Cursor (local machine paths)
+.cursor/

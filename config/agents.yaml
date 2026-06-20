@@ -1,0 +1,82 @@
+# Agent configuration — base weights and parameters
+agents:
+  trend_surfer:
+    weight: 0.30
+    timeframes: [H1, H4]
+    ema_fast: 9
+    ema_medium: 21
+    ema_slow: 50
+    adx_threshold: 25
+    stop_atr_mult: 2.0
+    target_atr_mult: 3.0
+    base_confidence: 0.60
+    max_confidence: 0.95
+    best_regimes: [trending, volatile]
+
+  breakout_hunter:
+    weight: 0.30
+    timeframes: [M15, H1]
+    donchian_period: 20
+    bb_squeeze_percentile: 5
+    volume_spike_threshold: 1.5
+    rsi_filter_long: 75
+    rsi_filter_short: 25
+    stop_atr_mult: 1.5
+    target_atr_mult: 3.0
+    base_confidence: 0.65
+    max_confidence: 0.90
+    best_regimes: [volatile, calm]
+
+  momentum_pulse:
+    weight: 0.15
+    timeframes: [M15, H1]
+    adx_threshold: 25
+    volume_threshold: 1.2
+    stop_atr_mult: 1.8
+    target_atr_mult: 2.5
+    base_confidence: 0.55
+    max_confidence: 0.80
+    best_regimes: [trending, volatile]
+
+  mean_reversion:
+    weight: 0.20
+    timeframes: [M15]
+    rsi_oversold: 30
+    rsi_overbought: 70
+    adx_max: 25
+    bb_proximity_pct: 5
+    stop_atr_mult: 1.0
+    min_confidence: 0.70
+    max_confidence: 0.90
+    best_regimes: [ranging, calm]
+
+  meta_orchestrator:
+    model: claude-sonnet-4-20250514
+    temperature: 0.1
+    min_agent_confidence: 0.65
+    cooldown_minutes: 5
+    max_cost_per_decision: 0.05
+    size_scale_range: [0.5, 1.5]
+
+# Regime weight boosts (multiplied at runtime)
+regime_boosts:
+  trending:
+    trend_surfer: 1.3
+    breakout_hunter: 1.0
+    momentum_pulse: 1.2
+    mean_reversion: 0.5
+  ranging:
+    trend_surfer: 0.6
+    breakout_hunter: 0.7
+    momentum_pulse: 0.8
+    mean_reversion: 1.4
+  volatile:
+    trend_surfer: 1.0
+    breakout_hunter: 1.3
+    momentum_pulse: 1.1
+    mean_reversion: 0.6
+  calm:
+    trend_surfer: 0.8
+    breakout_hunter: 1.2
+    momentum_pulse: 0.7
+    mean_reversion: 1.1

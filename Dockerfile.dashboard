@@ -1,0 +1,51 @@
+# QuantAI Trading Dashboard — multi-stage build
+# Stage 1: Build React frontend (Vite)
+# Stage 2: Python FastAPI serves API + static SPA
+
+# --- Frontend build ---
+FROM node:22-alpine AS frontend-build
+
+WORKDIR /app/frontend
+
+# Install dependencies first for layer caching
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci --ignore-scripts 2>/dev/null || npm install
+
+COPY frontend/ ./
+RUN npm run build
+
+# --- Python runtime ---
+FROM python:3.12-slim AS runtime
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PORT=8080
+
+# System deps (minimal)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-dashboard.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Application code
+COPY src/ ./src/
+COPY config/ ./config/
+COPY main.py ./
+
+# Copy built frontend assets (FastAPI mounts frontend/dist at /)
+COPY --from=frontend-build /app/frontend/dist ./frontend/dist
+
+# Shared volume mount points (created at runtime if missing)
+RUN mkdir -p logs data
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/api/status || exit 1
+
+CMD ["python", "-c", "from src.web.app import run_dashboard; import os; run_dashboard(host='0.0.0.0', port=int(os.environ.get('PORT', '8080')))"]

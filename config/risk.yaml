@@ -1,0 +1,50 @@
+# Risk constitution — FROZEN, never adapted by learning loop
+risk:
+  # Drawdown tiers
+  drawdown:
+    normal_max: 0.05
+    elevated_max: 0.10
+    warning_max: 0.12
+    critical_max: 0.15
+    emergency_close: 0.15
+    daily_loss_limit: 0.05
+    size_multipliers:
+      normal: 1.00
+      elevated: 0.75
+      warning: 0.50
+      critical: 0.25
+      emergency: 0.00
+    crypto_blocked_at: warning  # No new crypto at Warning tier
+
+  # Margin monitoring
+  margin:
+    alert_pct: 0.70
+    action_pct: 0.80
+    emergency_pct: 0.88
+    competition_penalty_pct: 0.90
+
+  # Leverage caps
+  leverage:
+    warning: 15
+    max: 20
+    hard_stop: 25
+    competition_penalty: 28
+
+  # Concentration limits
+  concentration:
+    warning_pct: 0.30
+    max_pct: 0.40
+    hard_stop_pct: 0.50
+    competition_penalty_pct: 0.90
+
+  # Position sizing
+  sizing:
+    kelly_fraction: 0.5  # Half-Kelly
+    max_risk_per_trade: 0.02
+    correlation_threshold: 0.70
+
+  # Competition compliance
+  compliance:
+    api_rate_limit_per_sec: 100
+    safe_harbor_rate: 500
+    single_account: true

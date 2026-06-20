@@ -1,0 +1,29 @@
+# QuantAI Trading Engine — optional cloud deployment
+# MT5 stays local; engine connects via ZeroMQ bridge over VPN/tunnel.
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/ ./src/
+COPY config/ ./config/
+COPY scripts/ ./scripts/
+COPY main.py ./
+
+# Shared volume mount points
+RUN mkdir -p logs data
+
+# Default: live trading with dashboard state publishing
+# Override CMD in Northflank for simulate/single-cycle modes
+CMD ["python", "main.py", "--mode", "live", "--phase", "round1", "--with-dashboard"]

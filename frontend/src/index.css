@@ -1,0 +1,48 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --color-background: #0b1120;
+  --color-foreground: #e2e8f0;
+  --color-card: #151e32;
+  --color-card-foreground: #e2e8f0;
+  --color-muted: #1e293b;
+  --color-muted-foreground: #94a3b8;
+  --color-border: #243049;
+  --color-accent: #22d3ee;
+  --color-positive: #fbbf24;
+  --color-negative: #f87171;
+  --color-primary: #38bdf8;
+  --color-primary-foreground: #0b1120;
+  --color-secondary: #334155;
+  --color-secondary-foreground: #e2e8f0;
+  --color-destructive: #f87171;
+  --color-destructive-foreground: #0b1120;
+  --color-ring: #38bdf8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans);
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.live-pulse {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
