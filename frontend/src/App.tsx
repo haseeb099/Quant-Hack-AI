@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { AgentsPage } from "@/pages/AgentsPage";
+import { DemoPage } from "@/pages/DemoPage";
 import { DecisionsPage } from "@/pages/DecisionsPage";
 import { MarketPage } from "@/pages/MarketPage";
 import { OverviewPage } from "@/pages/OverviewPage";
@@ -31,6 +32,7 @@ export default function App() {
             <Route path="risk" element={<RiskPage />} />
             <Route path="market" element={<MarketPage />} />
             <Route path="decisions" element={<DecisionsPage />} />
+            <Route path="demo" element={<DemoPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

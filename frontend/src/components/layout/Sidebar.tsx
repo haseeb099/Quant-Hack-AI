@@ -5,6 +5,7 @@ import {
   LayoutDashboard,
   Radio,
   ShieldAlert,
+  Trophy,
   Wallet,
 } from "lucide-react";
 import { NavLink } from "react-router-dom";
@@ -18,6 +19,7 @@ const navItems = [
   { to: "/risk", label: "Risk", icon: ShieldAlert },
   { to: "/market", label: "Market", icon: CandlestickChart },
   { to: "/decisions", label: "Decisions", icon: Radio },
+  { to: "/demo", label: "Demo", icon: Trophy },
 ];
 
 export function Sidebar() {

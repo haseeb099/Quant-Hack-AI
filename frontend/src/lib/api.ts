@@ -162,6 +162,54 @@ export interface NorthflankDeployResponse {
   preflight: PreflightResponse;
 }
 
+export type WalkthroughStepStatus = "pass" | "warn" | "fail" | "manual";
+
+export interface DemoWalkthroughStep {
+  id: string;
+  order: number;
+  title: string;
+  duration_sec: number;
+  narration: string;
+  dashboard_route: string | null;
+  doc_path: string | null;
+  command: string | null;
+  check: string;
+  status: WalkthroughStepStatus;
+  detail: string;
+  doc_available: boolean;
+}
+
+export interface DemoWalkthroughResponse {
+  title: string;
+  audience: string;
+  duration_sec: number;
+  duration_label: string;
+  closing_line: string;
+  steps: DemoWalkthroughStep[];
+  summary: { pass: number; total: number; ready: boolean };
+  docs: string;
+}
+
+export type PrizeCheckStatus = "pass" | "warn" | "fail" | "skip";
+
+export interface TechnologyPrizeCheck {
+  code: string;
+  sponsor: string;
+  label: string;
+  status: PrizeCheckStatus;
+  message: string;
+  file_path: string | null;
+  remediation?: string | null;
+}
+
+export interface TechnologyPrizeResponse {
+  ready: boolean;
+  summary: { pass: number; warn: number; fail: number; skip: number };
+  checks: TechnologyPrizeCheck[];
+  docs: string;
+  notion_doc: string;
+}
+
 export interface NotionSyncChannelStats {
   success?: number;
   failure?: number;
@@ -734,6 +782,11 @@ export const api = {
 
   getNorthflankDeploy: () => fetchJson<NorthflankDeployResponse>("/deploy/northflank"),
 
+  getDemoWalkthrough: () => fetchJson<DemoWalkthroughResponse>("/demo/walkthrough"),
+
+  getTechnologyPrizeChecklist: () =>
+    fetchJson<TechnologyPrizeResponse>("/prize/technology-checklist"),
+
   getAgentAttribution: () =>
     fetchJson<{ attribution: AgentAttribution[]; total_closed_trades: number }>(
       "/agents/attribution",
@@ -844,6 +897,8 @@ export const queryKeys = {
   notionStatus: ["notionStatus"] as const,
   notionTasks: ["notionTasks"] as const,
   operatorRunbook: ["operatorRunbook"] as const,
+  demoWalkthrough: ["demoWalkthrough"] as const,
+  technologyPrize: ["technologyPrize"] as const,
   northflankDeploy: ["northflankDeploy"] as const,
   engineHealth: ["engineHealth"] as const,
   agentAttribution: ["agentAttribution"] as const,
