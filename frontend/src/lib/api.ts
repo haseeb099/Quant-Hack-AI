@@ -64,6 +64,45 @@ export interface LaunchReadinessResponse {
   checks: LaunchReadinessCheck[];
 }
 
+export interface AdaptationPlan {
+  phase: string;
+  timestamp?: string;
+  old_weights: Record<string, number>;
+  new_weights: Record<string, number>;
+  weight_deltas?: Record<string, number>;
+  promoted: boolean;
+  walk_forward?: {
+    oos_return?: number;
+    oos_sharpe?: number;
+    oos_max_dd?: number;
+    baseline_sharpe?: number;
+    sharpe_delta?: number;
+    historical_file?: string | null;
+  };
+  semantic_keys?: number;
+  trade_count?: number;
+}
+
+export interface AdaptationStatusResponse {
+  can_run: boolean;
+  reason: string;
+  scheduled_window_open: boolean;
+  local_time_bst: string;
+  mode: string;
+  engine_running: boolean;
+  engine_paused: boolean;
+  current_weights: Record<string, number>;
+  plan: AdaptationPlan | null;
+  plan_exists: boolean;
+  last_promoted: boolean;
+}
+
+export interface AdaptationRunResponse {
+  ok: boolean;
+  plan: AdaptationPlan;
+  message: string;
+}
+
 export interface EngineHealthResponse {
   data_source: string;
   state_stale: boolean;
@@ -669,6 +708,13 @@ export const api = {
       count: number;
       capacity: number;
     }>("/memory/working"),
+
+  getAdaptationStatus: () => fetchJson<AdaptationStatusResponse>("/adaptation/status"),
+
+  getAdaptationPlan: () => fetchJson<{ plan: AdaptationPlan | null; exists: boolean }>("/adaptation/plan"),
+
+  runAdaptation: (body: { confirm: boolean; phase?: string; data_dir?: string }) =>
+    postJson<AdaptationRunResponse>("/adaptation/run", body),
 };
 
 export const queryKeys = {
@@ -686,6 +732,7 @@ export const queryKeys = {
   equityCurve: ["equityCurve"] as const,
   competitionScore: ["competitionScore"] as const,
   launchReadiness: ["launchReadiness"] as const,
+  adaptationStatus: ["adaptationStatus"] as const,
   engineHealth: ["engineHealth"] as const,
   agentAttribution: ["agentAttribution"] as const,
   controlState: ["controlState"] as const,
