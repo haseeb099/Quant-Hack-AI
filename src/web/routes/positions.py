@@ -13,11 +13,13 @@ router = APIRouter(tags=["positions"])
 def get_positions() -> dict:
     state = read_state()
     positions = state.get("positions", [])
-    total_exposure = sum(
-        abs(p.get("volume", 0) * p.get("price_open", 0))
-        for p in positions
-    )
-    total_pnl = sum(p.get("profit", 0) for p in positions)
+    total_exposure = 0.0
+    total_pnl = 0.0
+    for p in positions:
+        lots = float(p.get("volume", p.get("lots", p.get("size", 0))))
+        entry = float(p.get("price_open", p.get("entry", 0)))
+        total_exposure += abs(lots * entry)
+        total_pnl += float(p.get("profit", p.get("unrealized_pnl", 0)))
     return {
         "positions": positions,
         "count": len(positions),

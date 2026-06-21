@@ -26,7 +26,10 @@ export function ConnectionBanner({
     issues.push("Trading engine not running");
   }
   if (status?.engine_paused) {
-    issues.push("Engine paused — no new entries");
+    issues.push("Trading engine paused");
+  }
+  if (status?.state_stale) {
+    issues.push("Dashboard state is stale — engine may have stopped");
   }
   if (isLive && status?.engine_running && status.mt5_connected === false) {
     issues.push("MT5 / ZeroMQ bridge offline");

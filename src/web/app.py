@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.web.routes import agents, control, instruments, market, positions, risk, status, trades
+from src.web.routes import agents, competition, control, instruments, integrations, market, positions, risk, status, trades
 from src.web.ws import manager, websocket_endpoint
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,8 @@ def create_app() -> FastAPI | None:
 
     app.include_router(status.router)
     app.include_router(control.router)
+    app.include_router(competition.router)
+    app.include_router(integrations.router)
     app.include_router(trades.router)
     app.include_router(positions.router)
     app.include_router(agents.router)
@@ -84,6 +86,18 @@ def create_app() -> FastAPI | None:
 
         @app.get("/")
         async def serve_index():
+            index = FRONTEND_DIST / "index.html"
+            if index.exists():
+                return FileResponse(index)
+            return JSONResponse(status_code=404, content={"detail": "Frontend not built"})
+
+        @app.get("/{full_path:path}")
+        async def serve_spa(full_path: str):
+            if full_path.startswith("api") or full_path.startswith("ws"):
+                return JSONResponse(status_code=404, content={"detail": "Not found"})
+            candidate = FRONTEND_DIST / full_path
+            if full_path and candidate.is_file():
+                return FileResponse(candidate)
             index = FRONTEND_DIST / "index.html"
             if index.exists():
                 return FileResponse(index)

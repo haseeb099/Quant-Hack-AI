@@ -90,12 +90,12 @@ cd frontend && npm install && npm run dev
 ### Production / API only
 
 ```bash
-pip install fastapi uvicorn
-cd frontend && npm run build
-python -c "from src.web.app import run_dashboard; run_dashboard()" 2>/dev/null \
-  || python -c "from src.web.dashboard import run_dashboard; run_dashboard()"
-# Open http://localhost:8080
+./scripts/start_dashboard.sh          # build + serve on :8080
+# or with engine:
+python main.py --mode simulate --phase round1 --with-dashboard
 ```
+
+Set `DEMO_MODE=true` when running the API alone (no engine) so the dashboard shows a **Demo** badge instead of stale live state.
 
 ### Northflank deployment
 
@@ -120,7 +120,7 @@ Set `DASHBOARD_AUTH_TOKEN` on the dashboard ingress. See [Northflank Deploy Guid
 | `/market` | 15-instrument grid with session/regime status |
 | `/decisions` | Live per-symbol decision feed |
 
-API: `GET /api/status`, `/api/account`, `/api/trades`, `/api/agents`, `/api/risk`, `/api/instruments` · WebSocket: `/ws/live`
+API: `GET /api/status`, `/api/competition-score`, `/api/health/engine`, `/api/integrations`, `/api/account`, `/api/trades`, `/api/agents/attribution`, `/api/risk`, `/api/instruments` · WebSocket: `/ws/live`
 
 ## Project Structure
 
@@ -160,6 +160,8 @@ quantai/
 ```bash
 pytest tests/ -v
 ```
+
+CI runs pytest and `frontend/npm run build` on push (see `.github/workflows/ci.yml`).
 
 ## Documentation
 

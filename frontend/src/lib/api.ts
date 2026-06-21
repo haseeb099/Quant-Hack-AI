@@ -8,6 +8,9 @@ export type DrawdownTier =
 export interface StatusResponse {
   phase: string;
   mode: string;
+  data_source?: "demo" | "simulate" | "live" | string;
+  state_age_sec?: number | null;
+  state_stale?: boolean;
   last_cycle_at: string | null;
   next_cycle_at: string | null;
   connected: boolean;
@@ -19,6 +22,46 @@ export interface StatusResponse {
   zmq_last_error?: string | null;
   last_tick_at?: string | null;
   last_tick_age_ms?: number | null;
+  account_profile?: string | null;
+}
+
+export interface CompetitionScoreResponse {
+  total: number;
+  components: Array<{
+    label: string;
+    weight: number;
+    value: number;
+    raw: number;
+  }>;
+}
+
+export interface EngineHealthResponse {
+  data_source: string;
+  state_stale: boolean;
+  state_age_sec?: number | null;
+  engine_running: boolean;
+  engine_paused: boolean;
+  cycle_in_progress: boolean;
+  mode: string;
+  mt5_connected: boolean;
+  zmq_last_error?: string | null;
+  last_cycle_at?: string | null;
+  next_cycle_at?: string | null;
+  last_tick_at?: string | null;
+  last_tick_age_ms?: number | null;
+  dd_tier?: string;
+  drawdown_pct?: number;
+  discipline?: number;
+  account_profile?: string | null;
+}
+
+export interface AgentAttribution {
+  agent: string;
+  label: string;
+  trades: number;
+  win_rate: number;
+  avg_r: number;
+  symbols: string[];
 }
 
 export interface ControlStateResponse {
@@ -344,11 +387,17 @@ export const api = {
     };
   },
 
-  getTrades: async (params?: { limit?: number; offset?: number; symbol?: string }) => {
+  getTrades: async (params?: {
+    limit?: number;
+    offset?: number;
+    symbol?: string;
+    status?: string;
+  }) => {
     const search = new URLSearchParams();
     if (params?.limit != null) search.set("limit", String(params.limit));
     if (params?.offset != null) search.set("offset", String(params.offset));
     if (params?.symbol) search.set("symbol", params.symbol);
+    if (params?.status) search.set("status", params.status);
     const qs = search.toString();
     const raw = await fetchJson<{
       trades: Array<Record<string, unknown>>;
@@ -467,6 +516,17 @@ export const api = {
     return { points: raw.history ?? [] };
   },
 
+  getCompetitionScore: () => fetchJson<CompetitionScoreResponse>("/competition-score"),
+
+  getEngineHealth: () => fetchJson<EngineHealthResponse>("/health/engine"),
+
+  getIntegrations: () => fetchJson<Record<string, unknown>>("/integrations"),
+
+  getAgentAttribution: () =>
+    fetchJson<{ attribution: AgentAttribution[]; total_closed_trades: number }>(
+      "/agents/attribution",
+    ),
+
   getControlState: () => fetchJson<ControlStateResponse>("/control/state"),
 
   pauseEngine: () => postJson<ControlActionResponse>("/engine/pause"),
@@ -499,7 +559,8 @@ export const queryKeys = {
   status: ["status"] as const,
   account: ["account"] as const,
   positions: ["positions"] as const,
-  trades: (filters?: { symbol?: string; offset?: number }) => ["trades", filters] as const,
+  trades: (filters?: { symbol?: string; offset?: number; status?: string }) =>
+    ["trades", filters] as const,
   trade: (id: string) => ["trade", id] as const,
   agents: ["agents"] as const,
   lastCycle: ["lastCycle"] as const,
@@ -507,6 +568,9 @@ export const queryKeys = {
   instruments: ["instruments"] as const,
   marketLive: ["marketLive"] as const,
   equityCurve: ["equityCurve"] as const,
+  competitionScore: ["competitionScore"] as const,
+  engineHealth: ["engineHealth"] as const,
+  agentAttribution: ["agentAttribution"] as const,
   controlState: ["controlState"] as const,
 };
 

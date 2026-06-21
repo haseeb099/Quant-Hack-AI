@@ -31,19 +31,20 @@ export function TradesPage() {
   const [sheetOpen, setSheetOpen] = useState(false);
 
   const { data, isLoading } = useQuery({
-    queryKey: queryKeys.trades({ symbol: symbolFilter || undefined }),
+    queryKey: queryKeys.trades({
+      symbol: symbolFilter || undefined,
+      status: statusFilter || undefined,
+    }),
     queryFn: () =>
       api.getTrades({
         limit: 50,
         symbol: symbolFilter || undefined,
+        status: statusFilter || undefined,
       }),
     refetchInterval: 20_000,
   });
 
-  const trades =
-    data?.trades.filter((t) =>
-      statusFilter ? t.status.toLowerCase().includes(statusFilter.toLowerCase()) : true,
-    ) ?? [];
+  const trades = data?.trades ?? [];
 
   async function openTradeDetail(trade: Trade) {
     try {
@@ -71,12 +72,17 @@ export function TradesPage() {
           onChange={(e) => setSymbolFilter(e.target.value)}
           className="max-w-xs"
         />
-        <Input
-          placeholder="Filter by status"
+        <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="max-w-xs"
-        />
+          className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+        >
+          <option value="">All statuses</option>
+          <option value="executed">Executed</option>
+          <option value="simulated">Simulated</option>
+          <option value="decision">Decision</option>
+          <option value="error">Error</option>
+        </select>
       </div>
 
       <Card className="bg-panel border-border/60">
