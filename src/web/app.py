@@ -93,6 +93,7 @@ def create_app() -> FastAPI | None:
 
         @app.get("/{full_path:path}")
         async def serve_spa(full_path: str):
+            """Serve built static files and SPA fallback for client-side routes."""
             if full_path.startswith("api") or full_path.startswith("ws"):
                 return JSONResponse(status_code=404, content={"detail": "Not found"})
             candidate = FRONTEND_DIST / full_path
