@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any
+
+from src.integrations.notion_sync_tracker import read_sync_state, record_sync_result
 
 logger = logging.getLogger(__name__)
 
@@ -137,11 +140,121 @@ class NotionSync:
         self._create_page(self.risk_events_ds, properties, context="risk event")
 
     def _create_page(self, database_id: str, properties: dict[str, Any], context: str) -> None:
+        channel = {
+            "trade journal": "trade_journal",
+            "agent performance": "agent_performance",
+            "risk event": "risk_events",
+            "task": "tasks",
+        }.get(context, "tasks")
         try:
             self._client.pages.create(parent={"database_id": database_id}, properties=properties)
             logger.debug("Notion sync: created %s row", context)
+            record_sync_result(channel, True)
         except Exception as exc:
             logger.warning("Notion sync failed (%s): %s", context, exc)
+            record_sync_result(channel, False, str(exc))
+
+    def sync_implementation_step(
+        self,
+        step_label: str,
+        status: str = "Done",
+        notes: str = "",
+    ) -> bool:
+        """Log a Command Center implementation step completion to Tasks DB."""
+        if not self._can_sync(self.tasks_ds):
+            return False
+        title = step_label[:200]
+        properties: dict[str, Any] = {
+            "Name": self._title(title),
+            "Status": self._select(status),
+        }
+        if notes:
+            properties["Notes"] = self._rich_text(notes)
+        self._create_page(self.tasks_ds, properties, context="task")
+        return True
+
+    @staticmethod
+    def _extract_plain(prop: dict[str, Any] | None) -> str:
+        if not prop:
+            return ""
+        ptype = prop.get("type")
+        if ptype == "title":
+            parts = prop.get("title") or []
+            return "".join(p.get("plain_text", "") for p in parts)
+        if ptype == "rich_text":
+            parts = prop.get("rich_text") or []
+            return "".join(p.get("plain_text", "") for p in parts)
+        if ptype == "select":
+            sel = prop.get("select")
+            return str(sel.get("name", "")) if sel else ""
+        if ptype == "status":
+            st = prop.get("status")
+            return str(st.get("name", "")) if st else ""
+        if ptype == "number":
+            val = prop.get("number")
+            return str(val) if val is not None else ""
+        if ptype == "checkbox":
+            return "yes" if prop.get("checkbox") else "no"
+        return ""
+
+    def query_tasks(self, limit: int = 30) -> list[dict[str, Any]]:
+        """Read implementation tasks from Notion Tasks DB (read-only)."""
+        if not self._can_sync(self.tasks_ds):
+            return []
+        try:
+            response = self._client.databases.query(
+                database_id=self.tasks_ds,
+                page_size=min(max(limit, 1), 100),
+            )
+        except Exception as exc:
+            logger.warning("Notion tasks query failed: %s", exc)
+            record_sync_result("tasks", False, str(exc))
+            return []
+
+        tasks: list[dict[str, Any]] = []
+        for page in response.get("results", []):
+            props = page.get("properties", {})
+            title = ""
+            status = ""
+            step_num: int | None = None
+            for key, val in props.items():
+                plain = self._extract_plain(val)
+                if val.get("type") == "title" and not title:
+                    title = plain or key
+                lk = key.lower()
+                if lk in ("status", "state") and not status:
+                    status = plain
+                if lk == "step" and plain.isdigit():
+                    step_num = int(plain)
+            if step_num is None:
+                match = re.search(r"step\s*(\d+)", title, re.I)
+                if match:
+                    step_num = int(match.group(1))
+            tasks.append({
+                "id": page.get("id", ""),
+                "title": title or "Untitled",
+                "status": status or "Unknown",
+                "step": step_num,
+                "url": page.get("url"),
+            })
+
+        tasks.sort(key=lambda t: (t["step"] is None, t["step"] or 999, t["title"]))
+        record_sync_result("tasks", True)
+        return tasks
+
+    def get_status(self) -> dict[str, Any]:
+        """Dashboard-facing Notion integration status."""
+        return {
+            "enabled": self.enabled,
+            "api_key_set": bool(self.api_key),
+            "databases": {
+                "trade_journal": bool(self.trade_journal_ds),
+                "agent_performance": bool(self.agent_perf_ds),
+                "risk_events": bool(self.risk_events_ds),
+                "tasks": bool(self.tasks_ds),
+            },
+            "sync_stats": read_sync_state(),
+        }
 
 
 def get_notion_sync() -> NotionSync:

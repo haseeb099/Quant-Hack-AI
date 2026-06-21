@@ -172,6 +172,30 @@ class CopilotAnalyzer:
         if not resolved:
             account = state.get("account", {})
             risk = state.get("risk", {})
+            lower = message.lower()
+            if any(k in lower for k in ("notion", "roadmap", "implementation step", "command center")):
+                from src.integrations.notion_sync import get_notion_sync
+
+                sync = get_notion_sync()
+                status = sync.get_status()
+                if sync.enabled and sync.tasks_ds:
+                    tasks = sync.query_tasks(limit=12)
+                    done = sum(1 for t in tasks if str(t.get("status", "")).lower() in ("done", "complete", "✅"))
+                    lines = [f"Notion sync active · {done}/{len(tasks)} tasks marked done."]
+                    for t in tasks[:8]:
+                        step = f"Step {t['step']}: " if t.get("step") else ""
+                        lines.append(f"· {step}{t['title']} — {t['status']}")
+                    return "\n".join(lines), None
+                if status.get("enabled"):
+                    return (
+                        "Notion API configured but Tasks DB not set — add NOTION_TASKS_DS_ID. "
+                        f"Other DBs: journal={status['databases']['trade_journal']}, "
+                        f"agents={status['databases']['agent_performance']}."
+                    ), None
+                return (
+                    "Notion sync not configured. Set NOTION_API_KEY and database IDs in .env."
+                ), None
+
             reply = (
                 f"Account equity ${float(account.get('equity', 0)):,.2f} · "
                 f"drawdown tier {risk.get('dd_tier', 'normal')} · "

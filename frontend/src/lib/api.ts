@@ -103,6 +103,41 @@ export interface AdaptationRunResponse {
   message: string;
 }
 
+export interface NotionSyncChannelStats {
+  success?: number;
+  failure?: number;
+  last_at?: string | null;
+  last_error?: string | null;
+}
+
+export interface NotionStatusResponse {
+  enabled: boolean;
+  notion_sync_enabled?: boolean;
+  api_key_set: boolean;
+  databases: {
+    trade_journal: boolean;
+    agent_performance: boolean;
+    risk_events: boolean;
+    tasks: boolean;
+  };
+  sync_stats: Record<string, NotionSyncChannelStats>;
+}
+
+export interface NotionTask {
+  id: string;
+  title: string;
+  status: string;
+  step: number | null;
+  url?: string | null;
+}
+
+export interface NotionTasksResponse {
+  tasks: NotionTask[];
+  enabled: boolean;
+  count?: number;
+  message?: string;
+}
+
 export interface EngineHealthResponse {
   data_source: string;
   state_stale: boolean;
@@ -626,6 +661,11 @@ export const api = {
 
   getIntegrations: () => fetchJson<Record<string, unknown>>("/integrations"),
 
+  getNotionStatus: () => fetchJson<NotionStatusResponse>("/notion/status"),
+
+  getNotionTasks: (limit = 30) =>
+    fetchJson<NotionTasksResponse>(`/notion/tasks?limit=${limit}`),
+
   getAgentAttribution: () =>
     fetchJson<{ attribution: AgentAttribution[]; total_closed_trades: number }>(
       "/agents/attribution",
@@ -733,6 +773,8 @@ export const queryKeys = {
   competitionScore: ["competitionScore"] as const,
   launchReadiness: ["launchReadiness"] as const,
   adaptationStatus: ["adaptationStatus"] as const,
+  notionStatus: ["notionStatus"] as const,
+  notionTasks: ["notionTasks"] as const,
   engineHealth: ["engineHealth"] as const,
   agentAttribution: ["agentAttribution"] as const,
   controlState: ["controlState"] as const,
