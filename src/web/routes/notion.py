@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from src.integrations.notion_sync import get_notion_sync, notion_sync_enabled
+from src.integrations.notion_az_sync import sync_az_to_notion
 from src.utils.logger import instrument_span, log_event
 
 router = APIRouter(tags=["notion"])
@@ -47,3 +48,17 @@ def sync_notion_step(body: NotionStepSyncRequest) -> dict:
         raise HTTPException(status_code=500, detail="Failed to sync step to Notion")
     log_event("notion_step_sync", step=body.step_label, status=body.status)
     return {"ok": True, "step": body.step_label, "status": body.status}
+
+
+@router.post("/api/notion/sync/az")
+@instrument_span("quantai.notion.sync_az")
+def sync_notion_az() -> dict:
+    """Sync A–Z operator guide + Steps 1–10 to Notion Tasks DB."""
+    sync = get_notion_sync()
+    if not sync.enabled or not sync.tasks_ds:
+        raise HTTPException(status_code=503, detail="Notion Tasks database not configured")
+    result = sync_az_to_notion(sync, include_guide_page=True)
+    if result.get("error"):
+        raise HTTPException(status_code=503, detail=result["error"])
+    log_event("notion_az_sync", steps=len(result.get("steps", [])))
+    return {"ok": True, **result}
