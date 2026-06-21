@@ -50,13 +50,16 @@ void OnStart()
    while(!IsStopped())
    {
       ZmqMsg msg;
-      push_socket.recv(msg, true);
-      if(msg.size() > 0)
+      if(push_socket.recv(msg))
       {
-         string request = msg.getData();
-         string response = ProcessRequest(request);
-         if(!pull_socket.send(response, true))
-            Print("Failed to send confirmation");
+         if(msg.size() > 0)
+         {
+            string request = msg.getData();
+            Print("ZeroMQ request: ", StringSubstr(request, 0, 120));
+            string response = ProcessRequest(request);
+            if(!pull_socket.send(response, true))
+               Print("Failed to send confirmation");
+         }
       }
       PublishTicks();
       Sleep(10);

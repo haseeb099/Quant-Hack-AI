@@ -32,9 +32,17 @@ class MetaOrchestrator:
     Uses Claude when available; falls back to regime-weighted voting.
     """
 
-    def __init__(self, config: dict[str, Any], regime_boosts: dict[str, dict[str, float]]) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any],
+        regime_boosts: dict[str, dict[str, float]],
+        agent_weights: dict[str, float] | None = None,
+        agent_best_regimes: dict[str, list[str]] | None = None,
+    ) -> None:
         self.config = config
         self.regime_boosts = regime_boosts
+        self.agent_weights = agent_weights or config.get("agent_weights", {})
+        self.agent_best_regimes = agent_best_regimes or config.get("agent_best_regimes", {})
         self._anthropic_key = config.get("anthropic_api_key") or os.getenv("ANTHROPIC_API_KEY")
         self._doubleword_key = os.getenv("DOUBLEWORD_API_KEY")
         self._groq_key = os.getenv("GROQ_API_KEY") or os.getenv("Groq_API_KEY")
@@ -112,7 +120,9 @@ class MetaOrchestrator:
         sell_score = 0.0
         for signal in signals:
             boost = boosts.get(signal.agent_name, 1.0)
-            weighted = signal.confidence * boost
+            weight = self.agent_weights.get(signal.agent_name, 1.0)
+            regime_mult = self._regime_match_multiplier(signal.agent_name, regime_key)
+            weighted = signal.confidence * boost * weight * regime_mult
             if signal.direction == Direction.BUY:
                 buy_score += weighted
             elif signal.direction == Direction.SELL:
@@ -160,6 +170,14 @@ class MetaOrchestrator:
             risk_assessment=f"Regime: {regime_key}",
             agent_votes=signals,
         )
+
+    def _regime_match_multiplier(self, agent_name: str, regime_key: str) -> float:
+        best = self.agent_best_regimes.get(agent_name, [])
+        if not best:
+            return 1.0
+        if regime_key in best:
+            return 1.0
+        return 0.3
 
     def _ai_decide(
         self,

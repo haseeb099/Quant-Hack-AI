@@ -92,7 +92,7 @@ class SharpeGuard:
         std_r = variance ** 0.5
         if std_r < 1e-9:
             return 0.0
-        return mean_r / std_r * (252 * 24 * 4) ** 0.5  # annualized from 15-min bars
+        return mean_r / std_r  # non-annualized 15-min equity returns (competition spec)
 
     def snapshot_count(self) -> int:
         return len(self._snapshots)

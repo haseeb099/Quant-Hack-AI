@@ -11,7 +11,11 @@ from typing import Any
 from fastapi import WebSocket, WebSocketDisconnect
 
 from src.web.runtime_state import read_state
-from src.web.state_publisher import register_state_listener
+from src.web.state_publisher import (
+    register_alert_listener,
+    register_state_listener,
+    register_tick_listener,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +31,8 @@ class ConnectionManager:
         self._last_hash: str = ""
         self._loop: asyncio.AbstractEventLoop | None = None
         self._listener_registered = False
+        self._tick_listener_registered = False
+        self._alert_listener_registered = False
 
     async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -59,10 +65,32 @@ class ConnectionManager:
             self._loop,
         )
 
+    def _on_ticks(self, payload: dict[str, Any]) -> None:
+        if not self._connections or self._loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(
+            self.broadcast({"type": "ticks", "payload": payload}),
+            self._loop,
+        )
+
+    def _on_market_alert(self, payload: dict[str, Any]) -> None:
+        if not self._connections or self._loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(
+            self.broadcast({"type": "market_alert", "payload": payload}),
+            self._loop,
+        )
+
     def _ensure_listener(self) -> None:
         if not self._listener_registered:
             register_state_listener(self._on_state_change)
             self._listener_registered = True
+        if not self._tick_listener_registered:
+            register_tick_listener(self._on_ticks)
+            self._tick_listener_registered = True
+        if not self._alert_listener_registered:
+            register_alert_listener(self._on_market_alert)
+            self._alert_listener_registered = True
 
     async def _poll_loop(self) -> None:
         while True:

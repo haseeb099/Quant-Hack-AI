@@ -21,15 +21,38 @@ class TrendSurferAgent(BaseTradingAgent):
         confidence = 0.0
         reasoning_parts: list[str] = []
 
+        h1_bull = features.extras.get("h1_trend_bull")
+        h1_bear = features.extras.get("h1_trend_bear")
+        h4_bull = features.extras.get("h4_trend_bull")
+        h4_bear = features.extras.get("h4_trend_bear")
+        if h1_bull is not None and h4_bull is not None:
+            if not (h1_bull and h4_bull) and not (h1_bear and h4_bear):
+                return AgentSignal(
+                    agent_name=self.name,
+                    symbol=features.symbol,
+                    direction=Direction.HOLD,
+                    confidence=0.0,
+                    reasoning="MTF misalignment — H1/H4 trends not aligned",
+                )
+
         if features.adx > adx_threshold:
             if (
                 features.close > features.ema_50
                 and features.ema_9 > features.ema_21
                 and features.macd_histogram > 0
             ):
+                pullback_ok = abs(features.close - features.ema_21) <= features.atr_14
+                if not pullback_ok:
+                    return AgentSignal(
+                        agent_name=self.name,
+                        symbol=features.symbol,
+                        direction=Direction.HOLD,
+                        confidence=0.0,
+                        reasoning="Uptrend but price not within 1× ATR of EMA21 — no chase",
+                    )
                 direction = Direction.BUY
                 confidence = base_conf
-                reasoning_parts.append("Uptrend: price>EMA50, EMA9>EMA21, MACD hist>0, ADX>25")
+                reasoning_parts.append("Uptrend: price>EMA50, EMA9>EMA21, MACD hist>0, ADX>25, pullback to EMA21")
                 if features.adx > 30:
                     confidence += 0.10
                     reasoning_parts.append("Strong ADX>30")
@@ -50,9 +73,18 @@ class TrendSurferAgent(BaseTradingAgent):
                 and features.ema_9 < features.ema_21
                 and features.macd_histogram < 0
             ):
+                pullback_ok = abs(features.close - features.ema_21) <= features.atr_14
+                if not pullback_ok:
+                    return AgentSignal(
+                        agent_name=self.name,
+                        symbol=features.symbol,
+                        direction=Direction.HOLD,
+                        confidence=0.0,
+                        reasoning="Downtrend but price not within 1× ATR of EMA21 — no chase",
+                    )
                 direction = Direction.SELL
                 confidence = base_conf
-                reasoning_parts.append("Downtrend: price<EMA50, EMA9<EMA21, MACD hist<0, ADX>25")
+                reasoning_parts.append("Downtrend: price<EMA50, EMA9<EMA21, MACD hist<0, ADX>25, pullback to EMA21")
                 if features.adx > 30:
                     confidence += 0.10
                 if features.volume_ratio > 1.5:

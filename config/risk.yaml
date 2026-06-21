@@ -5,7 +5,7 @@ risk:
     normal_max: 0.05
     elevated_max: 0.10
     warning_max: 0.12
-    critical_max: 0.15
+    critical_max: 0.12  # 12–15% band before emergency close
     emergency_close: 0.15
     daily_loss_limit: 0.05
     size_multipliers:

@@ -17,6 +17,8 @@ from src.web.runtime_state import (
 logger = logging.getLogger(__name__)
 
 _listeners: list[Any] = []
+_tick_listeners: list[Any] = []
+_alert_listeners: list[Any] = []
 
 
 def register_state_listener(callback: Any) -> None:
@@ -25,12 +27,62 @@ def register_state_listener(callback: Any) -> None:
         _listeners.append(callback)
 
 
+def register_tick_listener(callback: Any) -> None:
+    if callback not in _tick_listeners:
+        _tick_listeners.append(callback)
+
+
+def register_alert_listener(callback: Any) -> None:
+    if callback not in _alert_listeners:
+        _alert_listeners.append(callback)
+
+
 def _notify_listeners(state: dict[str, Any]) -> None:
     for listener in _listeners:
         try:
             listener(state)
         except Exception:
             logger.debug("State listener failed", exc_info=True)
+
+
+def notify_ticks(payload: dict[str, Any]) -> None:
+    for listener in _tick_listeners:
+        try:
+            listener(payload)
+        except Exception:
+            logger.debug("Tick listener failed", exc_info=True)
+
+
+def notify_market_alert(payload: dict[str, Any]) -> None:
+    for listener in _alert_listeners:
+        try:
+            listener(payload)
+        except Exception:
+            logger.debug("Alert listener failed", exc_info=True)
+
+
+def _merge_instruments(
+    state: dict[str, Any],
+    instruments: dict[str, Any],
+) -> None:
+    existing = state.setdefault("instruments", {})
+    for sym, data in instruments.items():
+        existing[sym] = {**existing.get(sym, {}), **data}
+
+
+def update_live_market(payload: dict[str, Any]) -> dict[str, Any]:
+    """Merge live tick data into runtime state without a full engine snapshot."""
+    state = read_state()
+    instruments = payload.get("instruments", {})
+    if instruments:
+        _merge_instruments(state, instruments)
+    state["market"] = {
+        "last_tick_at": payload.get("last_tick_at"),
+        "last_tick_age_ms": payload.get("last_tick_age_ms"),
+    }
+    state["timestamp"] = datetime.now(timezone.utc).isoformat()
+    write_state(state, STATE_PATH)
+    return state
 
 
 class StatePublisher:
@@ -72,7 +124,10 @@ class StatePublisher:
             "timestamp": snapshot.get("timestamp", now.isoformat()),
             "connected": snapshot.get("connected", False),
             "engine_running": snapshot.get("engine_running", state.get("engine_running", False)),
+            "engine_paused": snapshot.get("engine_paused", state.get("engine_paused", False)),
+            "cycle_in_progress": snapshot.get("cycle_in_progress", state.get("cycle_in_progress", False)),
             "mt5_connected": snapshot.get("mt5_connected", snapshot.get("connected", False)),
+            "zmq_last_error": snapshot.get("zmq_last_error", state.get("zmq_last_error")),
             "account": {**state.get("account", {}), **account},
             "positions": snapshot.get("positions", []),
             "risk": {**state.get("risk", {}), **risk, "sharpe": risk.get("sharpe", 0)},
@@ -84,7 +139,7 @@ class StatePublisher:
             updates["next_cycle_at"] = next_cycle
         state.update(updates)
         if snapshot.get("instruments"):
-            state["instruments"] = snapshot["instruments"]
+            _merge_instruments(state, snapshot["instruments"])
 
         equity = float(account.get("equity", 1_000_000))
         append_equity_point(state, equity, state["timestamp"])
@@ -128,7 +183,7 @@ class StatePublisher:
         }
         state["last_cycle"] = last_cycle
         if instruments:
-            state["instruments"] = instruments
+            _merge_instruments(state, instruments)
 
         equity = float(account.get("equity", 1_000_000))
         append_equity_point(state, equity, now.isoformat())

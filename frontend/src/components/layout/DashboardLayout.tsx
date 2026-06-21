@@ -8,7 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api, queryKeys } from "@/lib/api";
 
 export function DashboardLayout() {
-  const { connected } = useLiveWebSocket();
+  const { connected, lastAlert } = useLiveWebSocket();
   const { data: status } = useQuery({
     queryKey: queryKeys.status,
     queryFn: api.getStatus,
@@ -21,7 +21,7 @@ export function DashboardLayout() {
         <Sidebar />
         <div className="pl-56">
           <TopStatusBar wsConnected={connected} />
-          <ConnectionBanner status={status} wsConnected={connected} />
+          <ConnectionBanner status={status} wsConnected={connected} marketAlert={lastAlert} />
           <main className="p-6">
             <Outlet />
           </main>

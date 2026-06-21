@@ -9,6 +9,7 @@ import {
   YAxis,
 } from "recharts";
 import { MetricCard } from "@/components/shared/MetricCard";
+import { TradingControlBar } from "@/components/shared/TradingControlBar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -51,22 +52,32 @@ export function OverviewPage() {
 
   const dailyPnl = account?.daily_pnl ?? 0;
   const returnPct = account?.return_pct ?? 0;
+  const drawdownPct = risk?.drawdown_pct ?? 0;
+
+  const returnScore = Math.min(100, Math.max(0, (returnPct / 30) * 100));
+  const drawdownScore = Math.min(
+    100,
+    Math.max(0, 100 - (drawdownPct / 0.15) * 100),
+  );
+  const sharpeScore = risk?.sharpe
+    ? Math.min(100, Math.max(0, risk.sharpe * 25))
+    : 0;
 
   const scoreBreakdown = [
     {
-      label: "Return Rank",
+      label: "Return",
       weight: COMPETITION_WEIGHTS.return,
-      value: 72,
+      value: returnScore,
     },
     {
-      label: "Drawdown Rank",
+      label: "Drawdown",
       weight: COMPETITION_WEIGHTS.drawdown,
-      value: 68,
+      value: drawdownScore,
     },
     {
-      label: "Sharpe Rank",
+      label: "Sharpe",
       weight: COMPETITION_WEIGHTS.sharpe,
-      value: risk?.sharpe ? Math.min(100, risk.sharpe * 25) : 0,
+      value: sharpeScore,
     },
     {
       label: "Risk Discipline",
@@ -89,6 +100,24 @@ export function OverviewPage() {
       equity: p.equity,
     })) ?? [];
 
+  const equities = chartData.map((p) => p.equity);
+  const minEquity = equities.length ? Math.min(...equities) : 0;
+  const maxEquity = equities.length ? Math.max(...equities) : 0;
+  const yPadding =
+    equities.length > 1
+      ? (maxEquity - minEquity) * 0.08
+      : maxEquity * 0.01 || 1000;
+  const yDomain: [number, number] = [
+    minEquity - yPadding,
+    maxEquity + yPadding,
+  ];
+
+  const formatEquityTick = (value: number) => {
+    if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
+    if (value >= 1_000) return `$${(value / 1_000).toFixed(1)}K`;
+    return `$${value.toFixed(0)}`;
+  };
+
   return (
     <div className="flex flex-col gap-6">
       <div>
@@ -98,12 +127,22 @@ export function OverviewPage() {
         </p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
         <MetricCard
           title="Equity"
           loading={accountLoading}
           value={account ? formatCurrency(account.equity, true) : "—"}
           subtitle={`Balance ${account ? formatCurrency(account.balance, true) : "—"}`}
+        />
+        <MetricCard
+          title="Free Margin"
+          loading={accountLoading}
+          value={account ? formatCurrency(account.free_margin, true) : "—"}
+          subtitle={
+            account
+              ? `Used ${formatCurrency(account.margin, true)}`
+              : undefined
+          }
         />
         <MetricCard
           title="Daily P&L"
@@ -118,6 +157,11 @@ export function OverviewPage() {
           valueClassName={pnlColorClass(returnPct)}
         />
         <MetricCard
+          title="Exposure"
+          loading={accountLoading}
+          value={account ? formatCurrency(account.gross_exposure, true) : "—"}
+        />
+        <MetricCard
           title="Sharpe"
           loading={riskLoading}
           value={risk ? risk.sharpe.toFixed(2) : "—"}
@@ -129,19 +173,21 @@ export function OverviewPage() {
           <CardHeader>
             <CardTitle>Equity Curve</CardTitle>
           </CardHeader>
-          <CardContent className="h-72">
+          <CardContent className="h-72 min-h-72">
             {equityLoading ? (
               <Skeleton className="h-full w-full" />
             ) : chartData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData}>
-                  <CartesianGrid stroke="#334155" strokeDasharray="3 3" />
-                  <XAxis dataKey="time" stroke="#94a3b8" fontSize={11} />
-                  <YAxis
-                    stroke="#94a3b8"
-                    fontSize={11}
-                    tickFormatter={(v) => `$${(v / 1_000_000).toFixed(2)}M`}
-                  />
+              <div className="h-full w-full min-h-[288px]">
+                <ResponsiveContainer width="100%" height="100%" minHeight={288}>
+                  <LineChart data={chartData}>
+                    <CartesianGrid stroke="#334155" strokeDasharray="3 3" />
+                    <XAxis dataKey="time" stroke="#94a3b8" fontSize={11} />
+                    <YAxis
+                      stroke="#94a3b8"
+                      fontSize={11}
+                      domain={yDomain}
+                      tickFormatter={formatEquityTick}
+                    />
                   <Tooltip
                     contentStyle={{
                       background: "#151e32",
@@ -163,6 +209,7 @@ export function OverviewPage() {
                   />
                 </LineChart>
               </ResponsiveContainer>
+              </div>
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
                 No equity history yet
@@ -244,11 +291,27 @@ export function OverviewPage() {
             ) : (
               <>
                 <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Connected</span>
-                  <Badge variant={status?.connected ? "signal" : "destructive"}>
-                    {status?.connected ? "Online" : "Offline"}
+                  <span className="text-sm text-muted-foreground">Engine</span>
+                  <Badge variant={status?.engine_running ? "signal" : "destructive"}>
+                    {status?.engine_running ? "Running" : "Stopped"}
                   </Badge>
                 </div>
+                {status?.mode === "live" && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">MT5 bridge</span>
+                    <Badge variant={status?.mt5_connected ? "signal" : "destructive"}>
+                      {status?.mt5_connected ? "Connected" : "Offline"}
+                    </Badge>
+                  </div>
+                )}
+                {status?.engine_paused && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">Trading</span>
+                    <Badge variant="outline" className="text-amber-400">
+                      Paused
+                    </Badge>
+                  </div>
+                )}
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-muted-foreground">Last cycle</span>
                   <span className="font-mono text-sm">
@@ -266,6 +329,15 @@ export function OverviewPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Card className="bg-panel border-border/60">
+        <CardHeader>
+          <CardTitle>Trading Controls</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <TradingControlBar />
+        </CardContent>
+      </Card>
     </div>
   );
 }

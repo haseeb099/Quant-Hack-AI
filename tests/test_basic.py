@@ -122,6 +122,19 @@ def test_zeromq_connector_simulation():
     assert account["equity"] == 1_000_000
 
 
+def test_zeromq_connect_requires_ea_or_fails():
+    """connect() returns False when ports do not respond (offline CI / no EA)."""
+    conn = ZeroMQConnector()
+    # Without a responding EA this should fail rather than falsely report connected.
+    result = conn.connect()
+    if result:
+        assert conn.bridge_responding
+        conn.close()
+    else:
+        assert not conn.is_connected
+        assert conn.last_error
+
+
 def test_zeromq_protocol_mock():
     """Verify command structure matches MQL5 protocol."""
     conn = ZeroMQConnector()
@@ -137,7 +150,7 @@ def test_drawdown_guard_tiers():
         "normal_max": 0.05,
         "elevated_max": 0.10,
         "warning_max": 0.12,
-        "critical_max": 0.15,
+        "critical_max": 0.12,
         "emergency_close": 0.15,
         "size_multipliers": {
             "normal": 1.0, "elevated": 0.75, "warning": 0.5,
@@ -148,6 +161,11 @@ def test_drawdown_guard_tiers():
     state = guard.update(950_000)
     assert state.tier == "elevated"
     assert state.size_multiplier == 0.75
+
+    guard.reset(1_000_000)
+    critical = guard.update(870_000)
+    assert critical.tier == "critical"
+    assert critical.size_multiplier == 0.25
 
     guard.reset(1_000_000)
     emergency = guard.update(840_000)

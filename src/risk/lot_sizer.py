@@ -5,6 +5,17 @@ from __future__ import annotations
 import math
 
 
+def position_notional(volume: float, entry: float, contract_size: float) -> float:
+    """Notional value of a position in account currency."""
+    return abs(volume) * contract_size * entry
+
+
+def pnl_pct(profit: float, volume: float, entry: float, contract_size: float) -> float:
+    """Position PnL as fraction of notional exposure."""
+    notional = position_notional(volume, entry, contract_size)
+    return profit / max(notional, 1e-9)
+
+
 def risk_to_lots(
     risk_amount: float,
     entry: float,
@@ -14,7 +25,7 @@ def risk_to_lots(
     volume_step: float,
     volume_max: float,
 ) -> float:
-    """Map dollar/ETH risk budget to exchange lot size."""
+    """Map dollar risk budget to exchange lot size."""
     if risk_amount <= 0 or entry <= 0 or contract_size <= 0:
         return 0.0
 
@@ -29,6 +40,8 @@ def risk_to_lots(
         lots = math.floor(lots / volume_step) * volume_step
 
     if lots < volume_min:
-        # Small accounts: use broker minimum when risk budget is positive
+        min_lot_risk = volume_min * sl_dist * contract_size
+        if min_lot_risk > risk_amount:
+            return 0.0
         return volume_min if risk_amount > 0 else 0.0
     return round(lots, 8)

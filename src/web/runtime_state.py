@@ -26,7 +26,10 @@ def default_state() -> dict[str, Any]:
         "next_cycle_at": None,
         "connected": False,
         "engine_running": False,
+        "engine_paused": False,
+        "cycle_in_progress": False,
         "mt5_connected": False,
+        "zmq_last_error": None,
         "account": {
             "equity": 1_000_000,
             "balance": 1_000_000,
@@ -54,6 +57,10 @@ def default_state() -> dict[str, Any]:
         },
         "equity_history": [{"t": now, "equity": 1_000_000}],
         "instruments": {},
+        "market": {
+            "last_tick_at": None,
+            "last_tick_age_ms": None,
+        },
         "risk_events": [],
     }
 

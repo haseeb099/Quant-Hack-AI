@@ -74,6 +74,11 @@ def main() -> None:
 
     engine = TradingEngine(config=config, simulation=simulation)
 
+    if args.with_dashboard:
+        from src.web.engine_registry import register_engine
+
+        register_engine(engine)
+
     if args.mode == "single-cycle":
         engine.start()
         engine.run_cycle()

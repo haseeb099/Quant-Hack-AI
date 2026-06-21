@@ -59,10 +59,15 @@ def main() -> None:
             run_id=f"adapt_{args.phase}",
             params=new_weights,
             historical_data_path=str(historical_files[0]),
+            baseline_weights=base_weights,
         )
 
     promoted = wf_result.promoted if wf_result else False
-    if wf_result and not optimizer.should_promote(base_weights, new_weights, wf_result.oos_sharpe):
+    if wf_result and not optimizer.should_promote(
+        base_weights,
+        new_weights,
+        wf_result.oos_sharpe - wf_result.baseline_sharpe,
+    ):
         new_weights = base_weights
         promoted = False
 

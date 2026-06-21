@@ -2,17 +2,45 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from src.agents.base_agent import AgentSignal, FeatureVector
 from src.learning.layered_memory import LayeredMemory
 
+REGIME_LIBRARY_DIR = Path("data/regime_library")
+
 
 class ContextBuilder:
     """Assembles context dict for orchestrator (Claude + rule-based)."""
 
-    def __init__(self, memory: LayeredMemory) -> None:
+    def __init__(self, memory: LayeredMemory, use_regime_library: bool = True) -> None:
         self.memory = memory
+        self.use_regime_library = use_regime_library
+
+    @staticmethod
+    def _load_regime_analogs(regime: str, symbol: str, top_k: int = 3) -> list[dict[str, Any]]:
+        """Optional nearest regime analog outcomes from regime_library JSON files."""
+        if not REGIME_LIBRARY_DIR.exists():
+            return []
+        analogs: list[dict[str, Any]] = []
+        for path in sorted(REGIME_LIBRARY_DIR.glob("*.json"))[:50]:
+            try:
+                import json
+
+                with open(path, encoding="utf-8") as f:
+                    entry = json.load(f)
+                if entry.get("regime") == regime and entry.get("symbol") == symbol:
+                    analogs.append({
+                        "label": entry.get("label", path.stem),
+                        "avg_r": entry.get("avg_r", 0),
+                        "sample_count": entry.get("sample_count", 0),
+                    })
+            except (OSError, ValueError, TypeError):
+                continue
+            if len(analogs) >= top_k:
+                break
+        return analogs
 
     def build(
         self,
@@ -51,6 +79,12 @@ class ContextBuilder:
                 "reasoning": sig.reasoning,
             })
 
+        regime_analogs = (
+            self._load_regime_analogs(regime, features.symbol)
+            if self.use_regime_library
+            else []
+        )
+
         return {
             "symbol": features.symbol,
             "timeframe": features.timeframe,
@@ -83,6 +117,7 @@ class ContextBuilder:
             "debate_bear": (debate or {}).get("bear_reasoning", ""),
             "peer_sentiment": peer_sentiment or "mixed",
             "peer_sizing_adj": peer_sizing_adj,
+            "regime_analogs": regime_analogs,
         }
 
     def format_for_prompt(self, context: dict[str, Any]) -> str:

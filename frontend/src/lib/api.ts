@@ -13,7 +13,29 @@ export interface StatusResponse {
   connected: boolean;
   mt5_connected?: boolean;
   engine_running?: boolean;
+  engine_paused?: boolean;
+  cycle_in_progress?: boolean;
   timestamp?: string;
+  zmq_last_error?: string | null;
+  last_tick_at?: string | null;
+  last_tick_age_ms?: number | null;
+}
+
+export interface ControlStateResponse {
+  engine_available: boolean;
+  engine_running: boolean;
+  engine_paused: boolean;
+  cycle_in_progress: boolean;
+  mode: string;
+  mt5_connected: boolean;
+  zmq_last_error?: string | null;
+}
+
+export interface ControlActionResponse {
+  ok: boolean;
+  status?: string;
+  message?: string;
+  result?: Record<string, unknown>;
 }
 
 export interface AccountResponse {
@@ -124,6 +146,8 @@ export interface RiskResponse {
   compliance_score?: number;
 }
 
+export type MarketHealth = "green" | "amber" | "red";
+
 export interface Instrument {
   symbol: string;
   category: string;
@@ -131,10 +155,63 @@ export interface Instrument {
   allocation: number;
   session_active: boolean;
   last_regime: string;
+  bid?: number | null;
+  ask?: number | null;
+  mid?: number | null;
+  spread?: number | null;
+  change_pct?: number | null;
+  tick_age_ms?: number | null;
+  market_health?: MarketHealth | null;
+  bar_age_sec?: number | null;
 }
 
 export interface InstrumentsResponse {
   instruments: Instrument[];
+  count?: number;
+}
+
+export interface MarketLiveResponse {
+  last_tick_at: string | null;
+  last_tick_age_ms: number | null;
+  instruments: Record<
+    string,
+    Pick<
+      Instrument,
+      | "bid"
+      | "ask"
+      | "mid"
+      | "spread"
+      | "change_pct"
+      | "tick_age_ms"
+      | "market_health"
+      | "bar_age_sec"
+    >
+  >;
+  count?: number;
+}
+
+export interface RuntimeStatePayload {
+  phase?: string;
+  mode?: string;
+  last_cycle_at?: string | null;
+  next_cycle_at?: string | null;
+  connected?: boolean;
+  engine_running?: boolean;
+  mt5_connected?: boolean;
+  engine_paused?: boolean;
+  cycle_in_progress?: boolean;
+  zmq_last_error?: string | null;
+  timestamp?: string;
+  account?: AccountResponse & { initial_equity?: number };
+  positions?: Array<Record<string, unknown>>;
+  risk?: Record<string, unknown>;
+  last_cycle?: LastCycleResponse;
+  equity_history?: EquityPoint[];
+  instruments?: Record<string, Record<string, unknown>>;
+  market?: {
+    last_tick_at?: string | null;
+    last_tick_age_ms?: number | null;
+  };
 }
 
 export interface EquityPoint {
@@ -151,14 +228,69 @@ export interface WSMessage {
   payload: unknown;
 }
 
+export interface MarketAlertPayload {
+  severity: string;
+  message: string;
+  symbols: string[];
+  last_tick_age_ms?: number | null;
+}
+
+export interface TicksPayload {
+  last_tick_at: string | null;
+  last_tick_age_ms: number | null;
+  instruments: Record<string, Record<string, unknown>>;
+}
+
 const API_BASE = "/api";
+
+function authHeaders(): HeadersInit {
+  const token = import.meta.env.VITE_DASHBOARD_AUTH_TOKEN as string | undefined;
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  };
+  if (token?.trim()) {
+    headers.Authorization = `Bearer ${token.trim()}`;
+  }
+  return headers;
+}
 
 async function fetchJson<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { Accept: "application/json" },
+    headers: authHeaders(),
   });
   if (!res.ok) throw new Error(`API ${path} failed: ${res.status}`);
   return res.json() as Promise<T>;
+}
+
+async function postJson<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: body != null ? JSON.stringify(body) : undefined,
+  });
+  const data = (await res.json().catch(() => ({}))) as T & { detail?: string };
+  if (!res.ok) {
+    throw new Error(
+      typeof data.detail === "string" ? data.detail : `API ${path} failed: ${res.status}`,
+    );
+  }
+  return data;
+}
+
+async function patchJson<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "PATCH",
+    headers: authHeaders(),
+    body: JSON.stringify(body),
+  });
+  const data = (await res.json().catch(() => ({}))) as T & { detail?: string };
+  if (!res.ok) {
+    throw new Error(
+      typeof data.detail === "string" ? data.detail : `API ${path} failed: ${res.status}`,
+    );
+  }
+  return data;
 }
 
 function directionToVote(direction: string): AgentVote["vote"] {
@@ -322,14 +454,45 @@ export const api = {
   },
 
   getInstruments: async (): Promise<InstrumentsResponse> => {
-    const raw = await fetchJson<{ instruments: Instrument[] }>("/instruments");
+    const raw = await fetchJson<{ instruments: Instrument[]; count?: number }>(
+      "/instruments",
+    );
     return raw;
   },
+
+  getMarketLive: () => fetchJson<MarketLiveResponse>("/market/live"),
 
   getEquityCurve: async (): Promise<EquityCurveResponse> => {
     const raw = await fetchJson<{ history: EquityPoint[] }>("/equity-curve");
     return { points: raw.history ?? [] };
   },
+
+  getControlState: () => fetchJson<ControlStateResponse>("/control/state"),
+
+  pauseEngine: () => postJson<ControlActionResponse>("/engine/pause"),
+
+  resumeEngine: () => postJson<ControlActionResponse>("/engine/resume"),
+
+  runCycleNow: () => postJson<ControlActionResponse>("/engine/run-cycle"),
+
+  reconnectBridge: () => postJson<ControlActionResponse>("/bridge/reconnect"),
+
+  closePosition: (ticket: string) =>
+    postJson<ControlActionResponse>(`/positions/${ticket}/close`),
+
+  closeAllPositions: () =>
+    postJson<ControlActionResponse>("/positions/close-all"),
+
+  modifyPosition: (ticket: string, body: { sl?: number; tp?: number }) =>
+    patchJson<ControlActionResponse>(`/positions/${ticket}`, body),
+
+  manualTrade: (body: {
+    symbol: string;
+    direction: "BUY" | "SELL";
+    volume: number;
+    sl?: number;
+    tp?: number;
+  }) => postJson<ControlActionResponse>("/trades/manual", body),
 };
 
 export const queryKeys = {
@@ -342,7 +505,9 @@ export const queryKeys = {
   lastCycle: ["lastCycle"] as const,
   risk: ["risk"] as const,
   instruments: ["instruments"] as const,
+  marketLive: ["marketLive"] as const,
   equityCurve: ["equityCurve"] as const,
+  controlState: ["controlState"] as const,
 };
 
 export const DRAWDOWN_TIERS: { tier: DrawdownTier; label: string; maxPct: number }[] = [

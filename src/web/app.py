@@ -6,13 +6,13 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.web.routes import agents, instruments, positions, risk, status, trades
-from src.web.ws import ConnectionManager
+from src.web.routes import agents, control, instruments, market, positions, risk, status, trades
+from src.web.ws import manager, websocket_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +26,6 @@ def create_app() -> FastAPI | None:
     except ImportError:
         logger.warning("FastAPI not installed — dashboard unavailable")
         return None
-
-    live_manager = ConnectionManager()
 
     app = FastAPI(title="QuantAI Dashboard", version="2.0.0")
     app.add_middleware(
@@ -56,22 +54,17 @@ def create_app() -> FastAPI | None:
         app.add_middleware(DashboardAuthMiddleware)
 
     app.include_router(status.router)
+    app.include_router(control.router)
     app.include_router(trades.router)
     app.include_router(positions.router)
     app.include_router(agents.router)
     app.include_router(risk.router)
     app.include_router(instruments.router)
+    app.include_router(market.router)
 
     @app.websocket("/ws/live")
     async def ws_live(websocket: WebSocket) -> None:
-        await live_manager.connect(websocket)
-        try:
-            while True:
-                data = await websocket.receive_text()
-                if data == "ping":
-                    await websocket.send_json({"type": "pong", "payload": {}})
-        except WebSocketDisconnect:
-            live_manager.disconnect(websocket)
+        await websocket_endpoint(websocket)
 
     @app.get("/health")
     def health():
@@ -81,7 +74,7 @@ def create_app() -> FastAPI | None:
     async def startup() -> None:
         import asyncio
 
-        live_manager.start_background(asyncio.get_running_loop())
+        manager.start_background(asyncio.get_running_loop())
         logger.info("Dashboard WebSocket broadcaster started on /ws/live")
 
     if FRONTEND_DIST.exists() and os.getenv("DASHBOARD_SERVE_SPA", "true").lower() == "true":

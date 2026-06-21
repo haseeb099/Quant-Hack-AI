@@ -22,6 +22,10 @@ class KellySizer:
         phase_multiplier: float = 1.0,
         drawdown_multiplier: float = 1.0,
         orchestrator_scale: float = 1.0,
+        allocation_cap: float | None = None,
+        leverage_haircut: float = 1.0,
+        margin_size_multiplier: float = 1.0,
+        max_risk_override: float | None = None,
     ) -> float:
         kelly_pct = self._half_kelly(win_rate, reward_risk_ratio)
         vol_adj = 1.0 / (1.0 + atr_14 / (atr_50 + 1e-9))
@@ -29,8 +33,12 @@ class KellySizer:
 
         raw = equity * kelly_pct * vol_adj * conf_scale
         raw *= phase_multiplier * drawdown_multiplier * orchestrator_scale
+        raw *= leverage_haircut * margin_size_multiplier
 
-        max_risk = equity * self.config.get("max_risk_per_trade", 0.02)
+        max_risk_pct = max_risk_override or self.config.get("max_risk_per_trade", 0.02)
+        max_risk = equity * max_risk_pct
+        if allocation_cap is not None:
+            max_risk = min(max_risk, equity * allocation_cap)
         return min(raw, max_risk)
 
     @staticmethod

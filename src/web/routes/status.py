@@ -14,17 +14,25 @@ router = APIRouter(tags=["status"])
 @router.get("/api/status")
 def get_status() -> dict:
     state = read_state()
+    mode = state.get("mode", "simulate")
     engine_running = state.get("engine_running", False)
     mt5_connected = state.get("mt5_connected", state.get("connected", False))
+    market = state.get("market", {})
+    connected = bool(engine_running and (mode != "live" or mt5_connected))
     return {
         "phase": state.get("phase", "round1"),
-        "mode": state.get("mode", "simulate"),
+        "mode": mode,
         "last_cycle_at": state.get("last_cycle_at"),
         "next_cycle_at": state.get("next_cycle_at"),
-        "connected": bool(engine_running and mt5_connected),
+        "connected": connected,
         "engine_running": engine_running,
+        "engine_paused": state.get("engine_paused", False),
+        "cycle_in_progress": state.get("cycle_in_progress", False),
         "mt5_connected": mt5_connected,
         "timestamp": state.get("timestamp", datetime.now(timezone.utc).isoformat()),
+        "zmq_last_error": state.get("zmq_last_error"),
+        "last_tick_at": market.get("last_tick_at"),
+        "last_tick_age_ms": market.get("last_tick_age_ms"),
     }
 
 

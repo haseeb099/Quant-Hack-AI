@@ -30,6 +30,14 @@ def get_instruments() -> dict:
             "session_active": runtime.get("session_active", True),
             "last_regime": runtime.get("last_regime", "unknown"),
             "last_decision": runtime.get("last_decision"),
+            "bid": runtime.get("bid"),
+            "ask": runtime.get("ask"),
+            "mid": runtime.get("mid"),
+            "spread": runtime.get("spread"),
+            "change_pct": runtime.get("change_pct"),
+            "tick_age_ms": runtime.get("tick_age_ms"),
+            "market_health": runtime.get("market_health"),
+            "bar_age_sec": runtime.get("bar_age_sec"),
         })
 
     return {"instruments": items, "count": len(items)}

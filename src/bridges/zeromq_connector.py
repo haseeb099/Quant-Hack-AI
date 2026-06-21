@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_MS = 10000
 MAX_RECONNECT_ATTEMPTS = 3
+ZMQ_WARMUP_SEC = float(os.getenv("ZMQ_WARMUP_SEC", "2.0"))
+ZMQ_VERIFY_RETRIES = int(os.getenv("ZMQ_VERIFY_RETRIES", "3"))
 
 
 class ZeroMQConnector:
@@ -36,41 +38,93 @@ class ZeroMQConnector:
         self.tick_port = tick_port or int(os.getenv("ZMQ_TICK_PORT", "32770"))
         self.timeout_ms = timeout_ms
         self._connected = False
+        self._bridge_responding = False
+        self._sockets_ready = False
+        self._last_error: str = ""
         self._ctx: Any = None
         self._push_socket: Any = None
         self._pull_socket: Any = None
         self._sub_socket: Any = None
 
+    def _open_sockets(self) -> bool:
+        import zmq
+
+        self._ctx = zmq.Context()
+        self._push_socket = self._ctx.socket(zmq.PUSH)
+        self._push_socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
+        self._push_socket.setsockopt(zmq.LINGER, 0)
+        self._push_socket.connect(f"tcp://{self.host}:{self.command_port}")
+        self._pull_socket = self._ctx.socket(zmq.PULL)
+        self._pull_socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
+        self._pull_socket.setsockopt(zmq.LINGER, 0)
+        self._pull_socket.connect(f"tcp://{self.host}:{self.confirm_port}")
+        self._sub_socket = self._ctx.socket(zmq.SUB)
+        self._sub_socket.setsockopt(zmq.LINGER, 0)
+        self._sub_socket.connect(f"tcp://{self.host}:{self.tick_port}")
+        self._sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")
+        self._sub_socket.setsockopt(zmq.RCVTIMEO, 1000)
+        self._sockets_ready = True
+        return True
+
+    def health_check(self) -> tuple[bool, str]:
+        """Ping the MT5 EA with ACCOUNT — True only if it responds with equity."""
+        if not self._push_socket or not self._pull_socket:
+            return False, "sockets not open"
+        result = self._send_command({"action": "ACCOUNT"})
+        if result.get("status") == "ok" and "equity" in result:
+            self._bridge_responding = True
+            self._last_error = ""
+            return True, "ok"
+        message = result.get("message", "EA did not respond")
+        self._bridge_responding = False
+        self._last_error = message
+        return False, message
+
     def connect(self) -> bool:
         try:
-            import zmq
-
-            self._ctx = zmq.Context()
-            self._push_socket = self._ctx.socket(zmq.PUSH)
-            self._push_socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
-            self._push_socket.setsockopt(zmq.LINGER, 0)
-            self._push_socket.connect(f"tcp://{self.host}:{self.command_port}")
-            self._pull_socket = self._ctx.socket(zmq.PULL)
-            self._pull_socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
-            self._pull_socket.setsockopt(zmq.LINGER, 0)
-            self._pull_socket.connect(f"tcp://{self.host}:{self.confirm_port}")
-            self._sub_socket = self._ctx.socket(zmq.SUB)
-            self._sub_socket.setsockopt(zmq.LINGER, 0)
-            self._sub_socket.connect(f"tcp://{self.host}:{self.tick_port}")
-            self._sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")
-            self._sub_socket.setsockopt(zmq.RCVTIMEO, 1000)
-            self._connected = True
-            logger.info(
-                "ZeroMQ connected to MT5 on %s ports %s-%s",
-                self.host,
-                self.command_port,
-                self.tick_port,
-            )
-            return True
+            import zmq  # noqa: F401
         except ImportError:
             logger.warning("pyzmq not installed — running in simulation mode")
             return False
+
+        try:
+            self.close()
+            self._open_sockets()
+            time.sleep(ZMQ_WARMUP_SEC)
+
+            for attempt in range(1, ZMQ_VERIFY_RETRIES + 1):
+                ok, detail = self.health_check()
+                if ok:
+                    self._connected = True
+                    logger.info(
+                        "ZeroMQ bridge verified on %s ports %s-%s (attempt %d)",
+                        self.host,
+                        self.command_port,
+                        self.tick_port,
+                        attempt,
+                    )
+                    return True
+                logger.warning(
+                    "ZeroMQ verify attempt %d/%d failed: %s",
+                    attempt,
+                    ZMQ_VERIFY_RETRIES,
+                    detail,
+                )
+                time.sleep(1.0)
+
+            self._connected = False
+            self._bridge_responding = False
+            self._last_error = (
+                "Ports may be open but DWX_ZeroMQ_Server is not responding. "
+                "In MT5: Navigator -> Services -> stop and restart DWX_ZeroMQ_Server, "
+                "then enable Algorithmic Trading."
+            )
+            logger.error(self._last_error)
+            self.close()
+            return False
         except Exception:
+            self._connected = False
+            self._bridge_responding = False
             logger.error("ZeroMQ connection failed", exc_info=True)
             return False
 
@@ -85,10 +139,28 @@ class ZeroMQConnector:
 
     @property
     def is_connected(self) -> bool:
-        return self._connected
+        return self._connected and self._bridge_responding
+
+    @property
+    def bridge_responding(self) -> bool:
+        return self._bridge_responding
+
+    @property
+    def last_error(self) -> str:
+        return self._last_error
+
+    def refresh_health(self) -> bool:
+        """Re-verify EA response; reconnect if sockets were never verified."""
+        if not self._sockets_ready:
+            return self.connect()
+        ok, _ = self.health_check()
+        if ok:
+            self._connected = True
+            return True
+        return self.reconnect()
 
     def _send_command(self, command: dict[str, Any]) -> dict[str, Any]:
-        if not self._connected:
+        if not self._sockets_ready:
             return {"status": "simulated", **command}
 
         import zmq
@@ -117,7 +189,7 @@ class ZeroMQConnector:
         tp: float | None = None,
         ticket: int | None = None,
     ) -> dict[str, Any]:
-        if not self._connected:
+        if not self.is_connected:
             logger.info("SIM TRADE: %s %s %.4f", direction, symbol, volume)
             return {
                 "status": "simulated",
@@ -155,7 +227,7 @@ class ZeroMQConnector:
         return result
 
     def get_account_info(self) -> dict[str, Any]:
-        if not self._connected:
+        if not self._sockets_ready:
             return {
                 "equity": 1_000_000,
                 "balance": 1_000_000,
@@ -167,7 +239,7 @@ class ZeroMQConnector:
         return self._send_command({"action": "ACCOUNT"})
 
     def get_ohlcv(self, symbol: str, timeframe: str = "M15", count: int = 200) -> pd.DataFrame | None:
-        if not self._connected:
+        if not self._sockets_ready:
             return None
 
         result = self._send_command({
@@ -192,7 +264,7 @@ class ZeroMQConnector:
         return df
 
     def get_positions(self) -> list[dict[str, Any]]:
-        if not self._connected:
+        if not self._sockets_ready:
             return []
         result = self._send_command({"action": "POSITIONS"})
         if result.get("status") != "ok":
@@ -200,13 +272,13 @@ class ZeroMQConnector:
         return result.get("positions", [])
 
     def close_all(self) -> dict[str, Any]:
-        if not self._connected:
+        if not self.is_connected:
             logger.info("SIM CLOSE_ALL")
             return {"status": "simulated", "closed": 0}
         return self._send_command({"action": "CLOSE_ALL"})
 
     def close_position(self, ticket: int) -> dict[str, Any]:
-        if not self._connected:
+        if not self.is_connected:
             logger.info("SIM CLOSE ticket=%d", ticket)
             return {
                 "status": "simulated",
@@ -223,7 +295,7 @@ class ZeroMQConnector:
         sl: float | None = None,
         tp: float | None = None,
     ) -> dict[str, Any]:
-        if not self._connected:
+        if not self.is_connected:
             logger.info("SIM MODIFY ticket=%d sl=%s tp=%s", ticket, sl, tp)
             return {
                 "status": "simulated",
@@ -244,7 +316,7 @@ class ZeroMQConnector:
         return self._send_command(command)
 
     def poll_ticks(self) -> dict[str, Any] | None:
-        if not self._connected or not self._sub_socket:
+        if not self._sockets_ready or not self._sub_socket:
             return None
         try:
             msg = self._sub_socket.recv_string()
@@ -254,6 +326,8 @@ class ZeroMQConnector:
 
     def close(self) -> None:
         self._connected = False
+        self._bridge_responding = False
+        self._sockets_ready = False
         for sock in (self._push_socket, self._pull_socket, self._sub_socket):
             if sock is not None:
                 try:
