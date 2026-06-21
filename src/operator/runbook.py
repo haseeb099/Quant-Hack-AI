@@ -7,6 +7,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from src.operator.preflight import run_preflight
+from src.operator.verification_store import read_verification_state
 from src.web.between_round import is_scheduled_adaptation_window
 from src.web.launch_readiness import evaluate_launch_readiness
 from src.web.runtime_state import read_state
@@ -42,7 +43,7 @@ _RUNBOOK_PHASES: list[dict[str, Any]] = [
             {"id": "monitor", "label": "Dashboard + Logfire monitoring", "check": "logfire"},
             {"id": "risk", "label": "Drawdown tier normal/warning", "check": "drawdown_ok"},
             {"id": "discipline", "label": "Risk discipline ≥80", "check": "discipline_ok"},
-            {"id": "copilot", "label": "Copilot grounded analysis available", "check": "always"},
+            {"id": "copilot", "label": "Copilot grounded analysis available", "check": "copilot"},
         ],
     },
     {
@@ -51,11 +52,16 @@ _RUNBOOK_PHASES: list[dict[str, Any]] = [
         "steps": [
             {"id": "pause", "label": "Pause engine or confirm window", "check": "adapt_window"},
             {"id": "adapt", "label": "Run adapt_round / dashboard adaptation", "check": "adaptation_allowed"},
-            {"id": "learning", "label": "Learning pipeline (ingest + regime)", "check": "always"},
+            {"id": "learning", "label": "Learning pipeline (ingest + regime)", "check": "learning_pipeline"},
             {"id": "notion", "label": "Sync results to Notion", "check": "notion"},
         ],
     },
 ]
+
+
+def _verification_map() -> dict[str, dict[str, Any]]:
+    cached = read_verification_state()
+    return {c["code"]: c for c in cached.get("checks", [])}
 
 
 def _step_status(check: str, state: dict[str, Any], preflight: dict[str, Any], launch: dict[str, Any]) -> tuple[str, str]:
@@ -64,9 +70,25 @@ def _step_status(check: str, state: dict[str, Any], preflight: dict[str, Any], l
         return "manual", "Operator verifies"
 
     preflight_map = {c["code"]: c for c in preflight.get("checks", [])}
+    verification_map = _verification_map()
 
     if check == "preflight_pytest":
-        return "manual", "Run: pytest tests/ -q"
+        c = verification_map.get("PYTEST")
+        if c:
+            return ("pass" if c["passed"] else "fail"), c.get("detail", "")
+        return "manual", "Run POST /api/operator/verification/run or pytest tests/ -q"
+
+    if check == "copilot":
+        c = verification_map.get("COPILOT")
+        if c:
+            return ("pass" if c["passed"] else "fail"), c.get("detail", "")
+        return "manual", "Run automated verification"
+
+    if check == "learning_pipeline":
+        c = verification_map.get("LEARNING_PIPELINE")
+        if c:
+            return ("pass" if c["passed"] else "warn"), c.get("detail", "")
+        return "manual", "Run scripts/run_learning_pipeline.sh between rounds"
 
     if check == "tick_stream":
         c = preflight_map.get("TICK_STREAM")
