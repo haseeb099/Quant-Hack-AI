@@ -94,15 +94,16 @@ def main() -> int:
         "Peer crowd sentiment": True,
         "Kelly + lot sizing": True,
         "Drawdown/Margin/Sharpe guards": True,
+        "News/fundamentals feed": True,
+        "SentimentAgent (5th agent)": True,
+        "Event risk gate": True,
         "ZeroMQ live execution": after.get("equity") is not None,
-        "News/fundamentals feed": False,
     }
     for name, ok in components.items():
         print(f"  [{'x' if ok else ' '}] {name}")
 
     print("\n--- NOT YET IMPLEMENTED ---")
-    print("  - Live news / external sentiment API (report.md roadmap only)")
-    print("  - Real competition leaderboard feed for PeerMonitor")
+    print("  - Real competition leaderboard feed (set COMPETITION_LEADERBOARD_URL)")
 
     engine.compliance_heartbeat.stop()
     engine.connector.close()

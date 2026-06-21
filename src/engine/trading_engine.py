@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import datetime, timezone
 
@@ -14,6 +15,7 @@ from src.agents.debate_orchestrator import DebateOrchestrator
 from src.agents.mean_reversion import MeanReversionAgent
 from src.agents.meta_orchestrator import MetaOrchestrator
 from src.agents.momentum_pulse import MomentumPulseAgent
+from src.agents.sentiment_agent import SentimentAgent
 from src.agents.trend_surfer import TrendSurferAgent
 from src.bridges.zeromq_connector import ZeroMQConnector
 from src.data.feature_engine import FeatureEngine
@@ -22,6 +24,7 @@ from src.data.market_validator import MarketValidator
 from src.data.session_filter import SessionFilter
 from src.engine.adaptation_loader import apply_adaptation_to_config, load_adaptation_plan
 from src.engine.config import QuantAIConfig, load_yaml
+from src.intelligence.market_intelligence import MarketIntelligenceService
 from src.intelligence.peer_monitor import PeerMonitor
 from src.learning.layered_memory import LayeredMemory, TradeRecord
 from src.risk.account_profile import AccountProfile, detect_profile, position_notional
@@ -55,6 +58,7 @@ class TradingEngine:
         self.context_builder = ContextBuilder(self.memory)
         self.debate_orchestrator = DebateOrchestrator()
         self.peer_monitor = PeerMonitor(round_id=config.current_phase)
+        self.intelligence = MarketIntelligenceService()
         self.trade_logger = TradeLogger()
         self.sharpe_guard = SharpeGuard()
         self.compliance_heartbeat = ComplianceHeartbeat(config.risk)
@@ -86,6 +90,8 @@ class TradingEngine:
             MomentumPulseAgent(config.agent_config("momentum_pulse")),
             MeanReversionAgent(config.agent_config("mean_reversion")),
         ]
+        if self.intelligence.enabled and os.getenv("SENTIMENT_AGENT_ENABLED", "true").lower() not in ("0", "false"):
+            self.agents.append(SentimentAgent(config.agent_config("sentiment_agent")))
         self.orchestrator = MetaOrchestrator(
             orch_cfg, config.regime_boosts, agent_weights, agent_best_regimes,
         )
@@ -528,6 +534,7 @@ class TradingEngine:
                 "last_tick_at": now.isoformat(),
                 "last_tick_age_ms": self.live_feed.youngest_tick_age_ms(),
             },
+            "intelligence": self.intelligence.snapshot() if self.intelligence.enabled else {"enabled": False},
         }
         self.state_publisher.publish(snapshot)
 
@@ -537,6 +544,7 @@ class TradingEngine:
         for symbol in self.config.active_symbols:
             regime = self._instrument_regimes.get(symbol, "unknown")
             tick = self.live_feed.get_tick(symbol)
+            sentiment = self.intelligence.get_sentiment(symbol) if self.intelligence.enabled else None
             out[symbol] = {
                 "last_regime": regime,
                 "session_active": self.session_filter.should_trade_symbol(symbol),
@@ -546,6 +554,9 @@ class TradingEngine:
                 "spread": tick.spread if tick else None,
                 "tick_age_ms": tick.tick_age_ms if tick else None,
                 "health": "green" if tick and tick.tick_age_ms < 2000 else "amber",
+                "sentiment_score": sentiment.score if sentiment else None,
+                "sentiment_confidence": sentiment.confidence if sentiment else None,
+                "sentiment_summary": sentiment.summary if sentiment else None,
             }
         return out
 
@@ -604,17 +615,15 @@ class TradingEngine:
 
             peer_adj = 1.0
             peer_sentiment = "mixed"
-            if self.simulation:
-                peer_snapshot = self.peer_monitor.update({
-                    "peer_count": 100,
-                    "avg_return": 0.02,
-                    "avg_drawdown": 0.04,
-                    "top_performer_return": 0.06,
-                    "our_return": (equity - self._initial_equity) / max(self._initial_equity, 1),
-                    "our_rank": 55,
-                })
+            peer_data = self._build_peer_data(equity)
+            if peer_data:
+                peer_snapshot = self.peer_monitor.update(peer_data)
                 peer_adj = self.peer_monitor.sizing_adjustment()
                 peer_sentiment = peer_snapshot.crowd_bias
+
+            if self.intelligence.enabled:
+                self.intelligence.refresh(self.config.active_symbols)
+                self.intelligence.persist_snapshot()
 
             if self._paused:
                 logger.info("Engine paused — managing exits only, no new entries")
@@ -661,13 +670,54 @@ class TradingEngine:
                     return float(current)
         return None
 
+    def _build_peer_data(self, equity: float) -> dict | None:
+        """Build peer leaderboard payload from env API or simulation defaults."""
+        import json
+        import os
+        import urllib.error
+        import urllib.request
+
+        our_return = (equity - self._initial_equity) / max(self._initial_equity, 1)
+        api_url = os.getenv("COMPETITION_LEADERBOARD_URL", "").strip()
+        if api_url and not self.simulation:
+            try:
+                with urllib.request.urlopen(api_url, timeout=8) as resp:
+                    data = json.loads(resp.read().decode())
+                return {
+                    "peer_count": data.get("peer_count", 0),
+                    "avg_return": data.get("avg_return", 0.0),
+                    "avg_drawdown": data.get("avg_drawdown", 0.0),
+                    "top_performer_return": data.get("top_performer_return", 0.0),
+                    "our_return": our_return,
+                    "our_rank": data.get("our_rank", 0),
+                }
+            except (urllib.error.URLError, TimeoutError, ValueError, KeyError):
+                logger.warning("Leaderboard fetch failed — using neutral peer data")
+
+        if self.simulation or os.getenv("PEER_MONITOR_MOCK", "true").lower() in ("1", "true", "yes"):
+            return {
+                "peer_count": 100,
+                "avg_return": 0.02,
+                "avg_drawdown": 0.04,
+                "top_performer_return": 0.06,
+                "our_return": our_return,
+                "our_rank": 55,
+            }
+        return None
+
     def _inject_agent_extras(
         self,
         features,
         agent_name: str,
         multi_features: dict,
         session_name: str,
+        intel_context: dict | None = None,
     ) -> None:
+        intel_context = intel_context or {}
+        if intel_context:
+            features.extras["sentiment_snapshot"] = intel_context.get("sentiment_snapshot", {})
+            features.extras["macro_regime"] = intel_context.get("macro_regime", {})
+            features.extras["event_gate"] = intel_context.get("event_gate", {})
         h1 = multi_features.get("H1")
         h4 = multi_features.get("H4")
         if h1:
@@ -800,6 +850,31 @@ class TradingEngine:
             logger.debug("Insufficient data for %s", symbol)
             return
 
+        event_gate = self.intelligence.evaluate_event_gate(symbol)
+        if not event_gate.allowed:
+            logger.info("Event gate blocked %s: %s", symbol, event_gate.reason)
+            self._cycle_decisions.append({
+                "symbol": symbol,
+                "direction": "HOLD",
+                "confidence": 0.0,
+                "regime": "unknown",
+                "session": session_name,
+                "reasoning": event_gate.reason,
+                "agent_votes": [],
+                "status": "skipped",
+                "skip_reason": event_gate.reason,
+            })
+            return
+
+        sentiment_snapshot = self.intelligence.get_sentiment(symbol)
+        macro_regime = self.intelligence.get_macro().to_dict() if self.intelligence.enabled else {}
+        upcoming_events = self.intelligence.upcoming_events()
+        intel_context = {
+            "sentiment_snapshot": sentiment_snapshot.to_dict() if sentiment_snapshot else {},
+            "macro_regime": macro_regime,
+            "event_gate": event_gate.to_dict(),
+        }
+
         donchian_period = int(self.config.agent_config("breakout_hunter").get("donchian_period", 20))
         multi_features = self.feature_engine.compute_multi(symbol, m15_df, donchian_period)
         if not multi_features:
@@ -826,7 +901,9 @@ class TradingEngine:
                 features = multi_features.get(tf) or (multi_features.get("M15") if tf != "M15" else None)
                 if features is None:
                     continue
-                self._inject_agent_extras(features, agent.name, multi_features, session_name)
+                self._inject_agent_extras(
+                    features, agent.name, multi_features, session_name, intel_context,
+                )
                 candidate = agent.analyze(features)
                 if best_signal is None or candidate.confidence > best_signal.confidence:
                     best_signal = candidate
@@ -859,6 +936,10 @@ class TradingEngine:
             margin_state=margin_state,
             peer_sentiment=peer_sentiment,
             peer_sizing_adj=peer_adj,
+            sentiment_snapshot=intel_context.get("sentiment_snapshot"),
+            macro_regime=intel_context.get("macro_regime"),
+            upcoming_events=upcoming_events,
+            event_gate=intel_context.get("event_gate"),
         )
         debate = self.debate_orchestrator.debate(primary_features, signals, base_context)
         debate_ctx = {
@@ -880,6 +961,10 @@ class TradingEngine:
             debate=debate_ctx,
             peer_sentiment=peer_sentiment,
             peer_sizing_adj=peer_adj,
+            sentiment_snapshot=intel_context.get("sentiment_snapshot"),
+            macro_regime=intel_context.get("macro_regime"),
+            upcoming_events=upcoming_events,
+            event_gate=intel_context.get("event_gate"),
         )
 
         decision = self.orchestrator.decide(
@@ -930,6 +1015,19 @@ class TradingEngine:
             decision_record["status"] = "skipped"
             decision_record["skip_reason"] = "HOLD decision"
             return
+
+        if event_gate.min_confidence_override and decision.confidence < event_gate.min_confidence_override:
+            decision_record["status"] = "skipped"
+            decision_record["skip_reason"] = (
+                f"Event gate requires confidence>={event_gate.min_confidence_override}"
+            )
+            return
+
+        event_size_mult = event_gate.size_multiplier
+        macro_adj = 1.0
+        if self.intelligence.enabled:
+            macro_adj = self.intelligence.macro.size_adjustment(symbol, decision.direction.value)
+        combined_adj = peer_adj * event_size_mult * macro_adj
 
         low_alloc_symbols = phase_rules.get("low_allocation_symbols", set())
         if phase_rules.get("low_allocation_requires_a_plus") and symbol in low_alloc_symbols:
@@ -1001,7 +1099,7 @@ class TradingEngine:
             confidence=decision.confidence,
             phase_multiplier=self.config.phase_multiplier,
             drawdown_multiplier=dd_state.size_multiplier,
-            orchestrator_scale=decision.size_scale * peer_adj,
+            orchestrator_scale=decision.size_scale * combined_adj,
             allocation_cap=allocation,
             leverage_haircut=margin_state.leverage_haircut,
             margin_size_multiplier=margin_state.size_multiplier * self._size_multiplier,

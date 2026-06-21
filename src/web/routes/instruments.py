@@ -38,6 +38,9 @@ def get_instruments() -> dict:
             "tick_age_ms": runtime.get("tick_age_ms"),
             "market_health": runtime.get("market_health"),
             "bar_age_sec": runtime.get("bar_age_sec"),
+            "sentiment_score": runtime.get("sentiment_score"),
+            "sentiment_confidence": runtime.get("sentiment_confidence"),
+            "sentiment_summary": runtime.get("sentiment_summary"),
         })
 
     return {"instruments": items, "count": len(items)}

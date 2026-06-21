@@ -11,6 +11,7 @@ const AGENT_ORDER = [
   "breakout_hunter",
   "momentum_pulse",
   "mean_reversion",
+  "sentiment_agent",
 ];
 
 export function AgentsPage() {
@@ -41,7 +42,7 @@ export function AgentsPage() {
       <div>
         <h1 className="text-xl font-semibold">Agents</h1>
         <p className="text-sm text-muted-foreground">
-          Four-agent ensemble performance and last-cycle votes
+          Five-agent ensemble performance and last-cycle votes
         </p>
       </div>
 

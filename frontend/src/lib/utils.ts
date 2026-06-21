@@ -57,6 +57,7 @@ const AGENT_LABELS: Record<string, string> = {
   breakout_hunter: "BreakoutHunter",
   momentum_pulse: "MomentumPulse",
   mean_reversion: "MeanReversion",
+  sentiment_agent: "SentimentAgent",
 };
 
 export function agentDisplayName(agent: string): string {
