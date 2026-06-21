@@ -117,6 +117,13 @@ def run_dashboard(host: str = "0.0.0.0", port: int = 8080) -> None:
     except ImportError:
         pass
 
+    from src.utils.logger import setup_logging
+
+    setup_logging(
+        level=os.getenv("LOG_LEVEL", "INFO"),
+        enable_logfire=os.getenv("DASHBOARD_NO_LOGFIRE", "").lower() not in ("1", "true"),
+    )
+
     app = create_app()
     if app is None:
         logger.error("Cannot start dashboard — install fastapi and uvicorn")

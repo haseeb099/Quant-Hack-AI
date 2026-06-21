@@ -37,6 +37,33 @@ export interface CompetitionScoreResponse {
   }>;
 }
 
+export type LaunchCheckStatus = "pass" | "warn" | "fail" | "skip";
+
+export interface LaunchReadinessCheck {
+  code: string;
+  label: string;
+  status: LaunchCheckStatus;
+  message: string;
+  remediation?: string | null;
+}
+
+export interface LaunchReadinessResponse {
+  ready: boolean;
+  mode: string;
+  phase: string;
+  data_source: string;
+  competition_launch_at: string;
+  launch_in_seconds: number;
+  launched: boolean;
+  summary: {
+    pass: number;
+    warn: number;
+    fail: number;
+    skip: number;
+  };
+  checks: LaunchReadinessCheck[];
+}
+
 export interface EngineHealthResponse {
   data_source: string;
   state_stale: boolean;
@@ -553,6 +580,9 @@ export const api = {
 
   getCompetitionScore: () => fetchJson<CompetitionScoreResponse>("/competition-score"),
 
+  getLaunchReadiness: () =>
+    fetchJson<LaunchReadinessResponse>("/competition/launch-readiness"),
+
   getEngineHealth: () => fetchJson<EngineHealthResponse>("/health/engine"),
 
   getIntegrations: () => fetchJson<Record<string, unknown>>("/integrations"),
@@ -655,6 +685,7 @@ export const queryKeys = {
   marketLive: ["marketLive"] as const,
   equityCurve: ["equityCurve"] as const,
   competitionScore: ["competitionScore"] as const,
+  launchReadiness: ["launchReadiness"] as const,
   engineHealth: ["engineHealth"] as const,
   agentAttribution: ["agentAttribution"] as const,
   controlState: ["controlState"] as const,

@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 
 from src.copilot.memory_context import MemoryContextBuilder
+from src.utils.logger import instrument_span, log_event
 
 router = APIRouter(tags=["memory"])
 
@@ -12,14 +13,23 @@ _builder = MemoryContextBuilder()
 
 
 @router.get("/api/memory/context")
+@instrument_span("quantai.memory.context")
 def get_memory_context(
     symbol: str | None = Query(None, min_length=3),
 ) -> dict:
     """Grounded memory snapshot for dashboard cards and copilot."""
-    return _builder.build(symbol=symbol.strip() if symbol else None)
+    result = _builder.build(symbol=symbol.strip() if symbol else None)
+    log_event(
+        "memory_context",
+        symbol=symbol,
+        working=len(result.get("working_memory", [])),
+        episodic=result.get("total_trades_in_db", 0),
+    )
+    return result
 
 
 @router.get("/api/memory/working")
+@instrument_span("quantai.memory.working")
 def get_working_memory() -> dict:
     working = _builder.memory.get_working_memory()
     return {

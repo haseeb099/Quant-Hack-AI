@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 
 from src.copilot.analyzer import CopilotAnalyzer
 from src.copilot.models import ChatRequest, SymbolAnalysisResponse
+from src.utils.logger import instrument_span, log_event
 from src.web.runtime_state import read_state
 
 router = APIRouter(tags=["copilot"])
@@ -50,9 +51,11 @@ def analyze_symbol(
 
 
 @router.post("/api/copilot/chat")
+@instrument_span("quantai.copilot.chat")
 async def copilot_chat(body: ChatRequest, request: Request) -> StreamingResponse:
     """SSE stream: citations → analysis chunks → done. Read-only — no trade execution."""
     _check_rate_limit(request.client.host if request.client else "local")
+    log_event("copilot_chat_start", symbol=body.symbol, message_len=len(body.message))
 
     async def event_stream() -> AsyncIterator[str]:
         yield _sse({"type": "start", "message": "Analyzing…"})
