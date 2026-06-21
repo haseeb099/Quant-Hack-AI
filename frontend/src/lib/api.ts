@@ -79,6 +79,35 @@ export interface ControlActionResponse {
   status?: string;
   message?: string;
   result?: Record<string, unknown>;
+  risk_check?: TradeCheckResponse;
+}
+
+export interface RiskBlocker {
+  code: string;
+  severity: "critical" | "warning" | "info" | string;
+  message: string;
+  discipline_risk?: number | null;
+  penalty_in_min?: number | null;
+}
+
+export interface TradeCheckResponse {
+  allowed: boolean;
+  blockers: RiskBlocker[];
+  warnings: RiskBlocker[];
+  remediation: string[];
+  projected: Record<string, unknown>;
+}
+
+export class TradeBlockedError extends Error {
+  check: TradeCheckResponse;
+
+  constructor(check: TradeCheckResponse) {
+    super(
+      check.blockers.map((b) => b.message).join(" · ") || "Trade blocked by risk rules",
+    );
+    this.name = "TradeBlockedError";
+    this.check = check;
+  }
 }
 
 export interface AccountResponse {
@@ -546,13 +575,52 @@ export const api = {
   modifyPosition: (ticket: string, body: { sl?: number; tp?: number }) =>
     patchJson<ControlActionResponse>(`/positions/${ticket}`, body),
 
-  manualTrade: (body: {
+  manualTrade: async (body: {
     symbol: string;
     direction: "BUY" | "SELL";
     volume: number;
     sl?: number;
     tp?: number;
-  }) => postJson<ControlActionResponse>("/trades/manual", body),
+  }) => {
+    const res = await fetch(`${API_BASE}/trades/manual`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify(body),
+    });
+    const data = (await res.json().catch(() => ({}))) as ControlActionResponse & {
+      detail?: TradeCheckResponse & { message?: string };
+    };
+    if (res.status === 422 && data.detail && Array.isArray(data.detail.blockers)) {
+      throw new TradeBlockedError(data.detail);
+    }
+    if (!res.ok) {
+      const msg =
+        typeof data.detail === "string"
+          ? data.detail
+          : data.detail?.message || `API /trades/manual failed: ${res.status}`;
+      throw new Error(msg);
+    }
+    return data;
+  },
+
+  checkTrade: (params: {
+    symbol: string;
+    direction: "BUY" | "SELL";
+    volume: number;
+    sl?: number;
+    tp?: number;
+    price?: number;
+  }) => {
+    const search = new URLSearchParams({
+      symbol: params.symbol,
+      direction: params.direction,
+      volume: String(params.volume),
+    });
+    if (params.sl != null) search.set("sl", String(params.sl));
+    if (params.tp != null) search.set("tp", String(params.tp));
+    if (params.price != null) search.set("price", String(params.price));
+    return fetchJson<TradeCheckResponse>(`/risk/check-trade?${search.toString()}`);
+  },
 };
 
 export const queryKeys = {
@@ -572,6 +640,11 @@ export const queryKeys = {
   engineHealth: ["engineHealth"] as const,
   agentAttribution: ["agentAttribution"] as const,
   controlState: ["controlState"] as const,
+  tradeCheck: (params: {
+    symbol: string;
+    direction: string;
+    volume: number;
+  }) => ["tradeCheck", params] as const,
 };
 
 export const DRAWDOWN_TIERS: { tier: DrawdownTier; label: string; maxPct: number }[] = [

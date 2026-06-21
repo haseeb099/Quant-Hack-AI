@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertTriangle,
   Pause,
   Play,
   RefreshCw,
@@ -7,7 +8,7 @@ import {
   ShieldAlert,
   Zap,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -18,25 +19,101 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { Input } from "@/components/ui/input";
-import { api, queryKeys } from "@/lib/api";
+import { Badge } from "@/components/ui/badge";
+import {
+  api,
+  queryKeys,
+  TradeBlockedError,
+  type TradeCheckResponse,
+} from "@/lib/api";
 
 interface TradingControlBarProps {
   compact?: boolean;
 }
 
+function TradeRiskPreview({ check }: { check: TradeCheckResponse }) {
+  if (check.allowed && check.warnings.length === 0) {
+    return (
+      <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+        Risk check passed — order may proceed.
+        {check.projected.projected_leverage != null && (
+          <span className="mt-1 block font-mono text-[11px] opacity-90">
+            Projected leverage {String(check.projected.projected_leverage)}× · notional{" "}
+            {typeof check.projected.trade_notional === "number"
+              ? `$${check.projected.trade_notional.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+              : "—"}
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs">
+      {check.blockers.map((b) => (
+        <div key={`${b.code}-${b.message}`} className="flex items-start gap-2 text-destructive">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <div>
+            <Badge variant="outline" className="mb-1 text-[10px] uppercase">
+              {b.code}
+            </Badge>
+            <p>{b.message}</p>
+          </div>
+        </div>
+      ))}
+      {check.warnings.map((w) => (
+        <div key={`${w.code}-${w.message}`} className="flex items-start gap-2 text-amber-200">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <p>{w.message}</p>
+        </div>
+      ))}
+      {check.remediation.length > 0 && (
+        <ul className="list-disc pl-5 text-muted-foreground">
+          {check.remediation.map((step) => (
+            <li key={step}>{step}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export function TradingControlBar({ compact = false }: TradingControlBarProps) {
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
+  const [tradeBlocked, setTradeBlocked] = useState<TradeCheckResponse | null>(null);
+  const [manualOpen, setManualOpen] = useState(false);
   const [manualSymbol, setManualSymbol] = useState("EUR/USD");
   const [manualVolume, setManualVolume] = useState("0.01");
   const [manualDirection, setManualDirection] = useState<"BUY" | "SELL">("BUY");
   const [manualSl, setManualSl] = useState("");
   const [manualTp, setManualTp] = useState("");
 
+  const parsedVolume = parseFloat(manualVolume);
+  const tradeParams = useMemo(() => {
+    if (!manualSymbol.trim() || Number.isNaN(parsedVolume) || parsedVolume <= 0) {
+      return null;
+    }
+    return {
+      symbol: manualSymbol.trim(),
+      direction: manualDirection,
+      volume: parsedVolume,
+    };
+  }, [manualSymbol, manualDirection, parsedVolume]);
+
   const { data: control } = useQuery({
     queryKey: queryKeys.controlState,
     queryFn: api.getControlState,
     refetchInterval: 10_000,
+  });
+
+  const { data: riskCheck, isFetching: riskChecking } = useQuery({
+    queryKey: tradeParams
+      ? queryKeys.tradeCheck(tradeParams)
+      : ["tradeCheck", "invalid"],
+    queryFn: () => api.checkTrade(tradeParams!),
+    enabled: manualOpen && tradeParams != null,
+    refetchInterval: manualOpen ? 8_000 : false,
   });
 
   const invalidateAll = async () => {
@@ -51,9 +128,18 @@ export function TradingControlBar({ compact = false }: TradingControlBarProps) {
   const mutationOpts = {
     onSuccess: () => {
       setActionError(null);
+      setTradeBlocked(null);
       void invalidateAll();
     },
-    onError: (err: Error) => setActionError(err.message),
+    onError: (err: Error) => {
+      if (err instanceof TradeBlockedError) {
+        setTradeBlocked(err.check);
+        setActionError(err.message);
+        return;
+      }
+      setTradeBlocked(null);
+      setActionError(err.message);
+    },
   };
 
   const pauseMut = useMutation({ mutationFn: api.pauseEngine, ...mutationOpts });
@@ -64,6 +150,10 @@ export function TradingControlBar({ compact = false }: TradingControlBarProps) {
   const manualMut = useMutation({
     mutationFn: api.manualTrade,
     ...mutationOpts,
+    onSuccess: () => {
+      mutationOpts.onSuccess();
+      setManualOpen(false);
+    },
   });
 
   const busy =
@@ -76,6 +166,7 @@ export function TradingControlBar({ compact = false }: TradingControlBarProps) {
 
   const engineAvailable = control?.engine_available ?? false;
   const isPaused = control?.engine_paused ?? false;
+  const canExecuteManual = Boolean(riskCheck?.allowed) && tradeParams != null && !busy;
 
   function confirmCloseAll() {
     if (
@@ -89,19 +180,23 @@ export function TradingControlBar({ compact = false }: TradingControlBarProps) {
   }
 
   function submitManualTrade() {
-    const volume = parseFloat(manualVolume);
-    if (!manualSymbol.trim() || Number.isNaN(volume) || volume <= 0) {
+    if (!tradeParams) {
       setActionError("Enter a valid symbol and volume");
       return;
     }
+    if (riskCheck && !riskCheck.allowed) {
+      setTradeBlocked(riskCheck);
+      setActionError(riskCheck.blockers.map((b) => b.message).join(" · "));
+      return;
+    }
     manualMut.mutate({
-      symbol: manualSymbol.trim(),
-      direction: manualDirection,
-      volume,
+      ...tradeParams,
       sl: manualSl ? parseFloat(manualSl) : undefined,
       tp: manualTp ? parseFloat(manualTp) : undefined,
     });
   }
+
+  const previewCheck = tradeBlocked ?? riskCheck;
 
   return (
     <div className={compact ? "flex flex-wrap items-center gap-2" : "flex flex-col gap-2"}>
@@ -162,7 +257,7 @@ export function TradingControlBar({ compact = false }: TradingControlBarProps) {
           Close all
         </Button>
 
-        <Sheet>
+        <Sheet open={manualOpen} onOpenChange={setManualOpen}>
           <SheetTrigger asChild>
             <Button size="sm" variant="secondary" disabled={busy}>
               Manual trade
@@ -172,7 +267,7 @@ export function TradingControlBar({ compact = false }: TradingControlBarProps) {
             <SheetHeader>
               <SheetTitle>Manual order</SheetTitle>
               <SheetDescription>
-                Send a market order through the MT5 bridge. Use with caution.
+                Pre-trade risk check runs before every order. Blocked trades show why and how to fix.
               </SheetDescription>
             </SheetHeader>
             <div className="mt-6 flex flex-col gap-4">
@@ -237,9 +332,15 @@ export function TradingControlBar({ compact = false }: TradingControlBarProps) {
                   />
                 </div>
               </div>
-              <Button disabled={busy} onClick={submitManualTrade}>
+
+              {tradeParams && riskChecking && !previewCheck && (
+                <p className="text-xs text-muted-foreground">Checking risk rules…</p>
+              )}
+              {previewCheck && <TradeRiskPreview check={previewCheck} />}
+
+              <Button disabled={!canExecuteManual} onClick={submitManualTrade}>
                 <RefreshCw className="mr-1.5 size-3.5" />
-                Execute order
+                {canExecuteManual ? "Execute order" : "Blocked by risk rules"}
               </Button>
             </div>
           </SheetContent>

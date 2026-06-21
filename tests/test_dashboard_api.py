@@ -143,3 +143,20 @@ def test_agent_attribution(client):
     r = client.get("/api/agents/attribution")
     assert r.status_code == 200
     assert "attribution" in r.json()
+
+
+def test_check_trade_allowed(client):
+    r = client.get("/api/risk/check-trade?symbol=EUR/USD&direction=BUY&volume=0.01")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["allowed"] is True
+    assert "blockers" in body
+    assert "projected" in body
+
+
+def test_check_trade_invalid_symbol(client):
+    r = client.get("/api/risk/check-trade?symbol=NOTREAL/USD&direction=BUY&volume=0.01")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["allowed"] is False
+    assert any(b["code"] == "INVALID_SYMBOL" for b in body["blockers"])

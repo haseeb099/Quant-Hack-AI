@@ -179,7 +179,21 @@ class TradingEngine:
         volume: float,
         sl: float | None = None,
         tp: float | None = None,
+        skip_risk_check: bool = False,
     ) -> dict:
+        if not skip_risk_check:
+            from src.risk.pre_trade_gate import TradeCheckRequest, get_pre_trade_gate
+
+            check = get_pre_trade_gate().evaluate_from_engine(
+                self,
+                TradeCheckRequest(symbol=symbol, direction=direction, volume=volume, sl=sl, tp=tp),
+            )
+            if not check.allowed:
+                return {
+                    "status": "blocked",
+                    "message": check.blockers[0].message if check.blockers else "Risk gate blocked trade",
+                    "risk_check": check.to_dict(),
+                }
         result = self.connector.send_trade(symbol, direction, volume, sl=sl, tp=tp)
         self._publish_state()
         return result

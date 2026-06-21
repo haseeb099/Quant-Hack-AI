@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from src.engine.config import load_yaml
+from src.risk.pre_trade_gate import TradeCheckRequest, get_pre_trade_gate
 from src.web.runtime_state import read_state
 
 router = APIRouter(tags=["risk"])
@@ -31,3 +32,26 @@ def get_risk() -> dict:
         },
         "events": state.get("risk_events", []),
     }
+
+
+@router.get("/api/risk/check-trade")
+def check_trade(
+    symbol: str = Query(..., min_length=3),
+    direction: str = Query(..., pattern="^(BUY|SELL|buy|sell)$"),
+    volume: float = Query(..., gt=0, le=100),
+    sl: float | None = None,
+    tp: float | None = None,
+    price: float | None = Query(None, gt=0),
+) -> dict:
+    """Pre-trade risk check with structured blockers (manual orders + copilot)."""
+    state = read_state()
+    request = TradeCheckRequest(
+        symbol=symbol.strip(),
+        direction=direction.upper(),
+        volume=volume,
+        sl=sl,
+        tp=tp,
+        price=price,
+    )
+    result = get_pre_trade_gate().evaluate_from_state(state, request)
+    return result.to_dict()
