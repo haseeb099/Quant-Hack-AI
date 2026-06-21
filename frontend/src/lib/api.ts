@@ -103,6 +103,65 @@ export interface AdaptationRunResponse {
   message: string;
 }
 
+export type OperatorStepStatus = "pass" | "warn" | "fail" | "manual";
+
+export interface OperatorRunbookStep {
+  id: string;
+  label: string;
+  check: string;
+  status: OperatorStepStatus;
+  detail: string;
+}
+
+export interface OperatorRunbookPhase {
+  id: string;
+  title: string;
+  steps: OperatorRunbookStep[];
+  summary: { pass: number; total: number };
+}
+
+export interface PreflightCheck {
+  code: string;
+  label: string;
+  passed: boolean;
+  detail: string;
+  remediation?: string;
+}
+
+export interface PreflightResponse {
+  passed: number;
+  total: number;
+  ready: boolean;
+  checks: PreflightCheck[];
+}
+
+export interface OperatorRunbookResponse {
+  timestamp_bst: string;
+  phase: string;
+  mode: string;
+  preflight: PreflightResponse;
+  launch_readiness: boolean;
+  phases: OperatorRunbookPhase[];
+}
+
+export interface NorthflankService {
+  name: string;
+  dockerfile: string;
+  ready: boolean;
+  volume_mounts: string[];
+  public: boolean;
+  port?: number;
+}
+
+export interface NorthflankDeployResponse {
+  platform: string;
+  services: NorthflankService[];
+  env_configured: Record<string, boolean>;
+  smoke_commands: string[];
+  docs: string;
+  preflight: PreflightResponse;
+}
+
 export interface NotionSyncChannelStats {
   success?: number;
   failure?: number;
@@ -666,6 +725,15 @@ export const api = {
   getNotionTasks: (limit = 30) =>
     fetchJson<NotionTasksResponse>(`/notion/tasks?limit=${limit}`),
 
+  getOperatorRunbook: () => fetchJson<OperatorRunbookResponse>("/operator/runbook"),
+
+  getOperatorPreflight: (zmqOnly = true, withCycle = false) =>
+    fetchJson<PreflightResponse>(
+      `/operator/preflight?zmq_only=${zmqOnly}&with_cycle=${withCycle}`,
+    ),
+
+  getNorthflankDeploy: () => fetchJson<NorthflankDeployResponse>("/deploy/northflank"),
+
   getAgentAttribution: () =>
     fetchJson<{ attribution: AgentAttribution[]; total_closed_trades: number }>(
       "/agents/attribution",
@@ -775,6 +843,8 @@ export const queryKeys = {
   adaptationStatus: ["adaptationStatus"] as const,
   notionStatus: ["notionStatus"] as const,
   notionTasks: ["notionTasks"] as const,
+  operatorRunbook: ["operatorRunbook"] as const,
+  northflankDeploy: ["northflankDeploy"] as const,
   engineHealth: ["engineHealth"] as const,
   agentAttribution: ["agentAttribution"] as const,
   controlState: ["controlState"] as const,
