@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.web.routes import agents, competition, control, copilot, instruments, integrations, market, positions, risk, status, trades
+from src.web.routes import adaptation, agents, competition, control, copilot, instruments, integrations, market, memory, notion, operator, positions, risk, status, trades
 from src.web.ws import manager, websocket_endpoint
 
 logger = logging.getLogger(__name__)
@@ -57,11 +57,15 @@ def create_app() -> FastAPI | None:
     app.include_router(control.router)
     app.include_router(competition.router)
     app.include_router(integrations.router)
+    app.include_router(notion.router)
+    app.include_router(operator.router)
     app.include_router(trades.router)
     app.include_router(positions.router)
     app.include_router(agents.router)
     app.include_router(risk.router)
     app.include_router(copilot.router)
+    app.include_router(memory.router)
+    app.include_router(adaptation.router)
     app.include_router(instruments.router)
     app.include_router(market.router)
 
@@ -115,6 +119,13 @@ def run_dashboard(host: str = "0.0.0.0", port: int = 8080) -> None:
         load_dotenv()
     except ImportError:
         pass
+
+    from src.utils.logger import setup_logging
+
+    setup_logging(
+        level=os.getenv("LOG_LEVEL", "INFO"),
+        enable_logfire=os.getenv("DASHBOARD_NO_LOGFIRE", "").lower() not in ("1", "true"),
+    )
 
     app = create_app()
     if app is None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.copilot.context import CopilotContextBuilder, resolve_symbol_from_message
+from src.copilot.memory_context import MemoryContextBuilder
 from src.copilot.models import AgentVoteSummary, DataCitation, SymbolAnalysisResponse
 from src.copilot.provider import enhance_summary_with_llm
 from src.risk.pre_trade_gate import TradeCheckRequest, get_pre_trade_gate
@@ -17,6 +18,7 @@ class CopilotAnalyzer:
 
     def __init__(self) -> None:
         self.context_builder = CopilotContextBuilder()
+        self.memory_builder = MemoryContextBuilder()
         self.gate = get_pre_trade_gate()
 
     @instrument_span("quantai.copilot.analyze_symbol")
@@ -62,6 +64,23 @@ class CopilotAnalyzer:
             value=trade_check.allowed,
             timestamp=context["timestamp"],
         ))
+
+        memory_ctx = self.memory_builder.build(
+            symbol=symbol,
+            regime=str(market.get("regime") or ""),
+            state=state,
+        )
+        citations.append(DataCitation(
+            source="layered_memory",
+            field="snapshot",
+            value={
+                "working": len(memory_ctx.get("working_memory", [])),
+                "semantic_best": (memory_ctx.get("semantic") or {}).get("best_agent"),
+                "similar": len(memory_ctx.get("similar_setups", [])),
+            },
+            timestamp=context["timestamp"],
+        ))
+        memory_line = self.memory_builder.memory_summary_line(memory_ctx)
 
         votes = [
             AgentVoteSummary(
@@ -110,6 +129,7 @@ class CopilotAnalyzer:
             context=context,
             trade_check=trade_check,
             votes=votes,
+            memory_line=memory_line,
         )
 
         summary = template_summary
@@ -132,6 +152,7 @@ class CopilotAnalyzer:
             market=market,
             agent_consensus=votes,
             trade_check=trade_check.to_dict(),
+            memory=memory_ctx,
             data_citations=citations,
             provider=provider,
             refused=False,
@@ -151,6 +172,30 @@ class CopilotAnalyzer:
         if not resolved:
             account = state.get("account", {})
             risk = state.get("risk", {})
+            lower = message.lower()
+            if any(k in lower for k in ("notion", "roadmap", "implementation step", "command center")):
+                from src.integrations.notion_sync import get_notion_sync
+
+                sync = get_notion_sync()
+                status = sync.get_status()
+                if sync.enabled and sync.tasks_ds:
+                    tasks = sync.query_tasks(limit=12)
+                    done = sum(1 for t in tasks if str(t.get("status", "")).lower() in ("done", "complete", "✅"))
+                    lines = [f"Notion sync active · {done}/{len(tasks)} tasks marked done."]
+                    for t in tasks[:8]:
+                        step = f"Step {t['step']}: " if t.get("step") else ""
+                        lines.append(f"· {step}{t['title']} — {t['status']}")
+                    return "\n".join(lines), None
+                if status.get("enabled"):
+                    return (
+                        "Notion API configured but Tasks DB not set — add NOTION_TASKS_DS_ID. "
+                        f"Other DBs: journal={status['databases']['trade_journal']}, "
+                        f"agents={status['databases']['agent_performance']}."
+                    ), None
+                return (
+                    "Notion sync not configured. Set NOTION_API_KEY and database IDs in .env."
+                ), None
+
             reply = (
                 f"Account equity ${float(account.get('equity', 0)):,.2f} · "
                 f"drawdown tier {risk.get('dd_tier', 'normal')} · "
@@ -186,6 +231,7 @@ class CopilotAnalyzer:
         context: dict[str, Any],
         trade_check: Any,
         votes: list[AgentVoteSummary],
+        memory_line: str | None = None,
     ) -> str:
         market = context["market"]
         mid = market.get("mid")
@@ -203,4 +249,6 @@ class CopilotAnalyzer:
             parts.append("Session filter suggests waiting for a preferred window.")
         if context.get("open_positions_on_symbol"):
             parts.append("You already have an open position on this symbol.")
+        if memory_line:
+            parts.append(memory_line)
         return " ".join(parts)

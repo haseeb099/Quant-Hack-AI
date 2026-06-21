@@ -10,6 +10,10 @@ from typing import Any
 _logfire_configured = False
 
 
+def is_logfire_active() -> bool:
+    return _logfire_configured
+
+
 def setup_logging(level: str = "INFO", enable_logfire: bool = True) -> None:
     """Configure console logging and optional Logfire instrumentation."""
     logging.basicConfig(
@@ -32,6 +36,18 @@ def setup_logging(level: str = "INFO", enable_logfire: bool = True) -> None:
             logging.getLogger(__name__).warning("logfire not installed — console logging only")
     elif enable_logfire and not os.getenv("LOGFIRE_TOKEN"):
         logging.getLogger(__name__).info("LOGFIRE_TOKEN not set — console logging only")
+
+
+def log_event(name: str, **fields: Any) -> None:
+    """Structured Logfire event — no-op when Logfire is unavailable."""
+    if not _logfire_configured:
+        return
+    try:
+        import logfire
+
+        logfire.info(name, **fields)
+    except Exception:
+        pass
 
 
 def instrument_span(name: str):

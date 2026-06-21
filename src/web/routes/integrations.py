@@ -7,6 +7,7 @@ import os
 from fastapi import APIRouter
 
 from src.integrations.notion_sync import notion_sync_enabled
+from src.utils.logger import is_logfire_active
 
 router = APIRouter(tags=["integrations"])
 
@@ -22,10 +23,12 @@ def get_integrations() -> dict:
             "trade_journal_ds": bool(os.getenv("NOTION_TRADE_JOURNAL_DS_ID")),
             "agent_perf_ds": bool(os.getenv("NOTION_AGENT_PERF_DS_ID")),
             "risk_events_ds": bool(os.getenv("NOTION_RISK_EVENTS_DS_ID")),
+            "tasks_ds": bool(os.getenv("NOTION_TASKS_DS_ID")),
         },
         "logfire": {
-            "enabled": logfire,
+            "enabled": is_logfire_active(),
             "configured": logfire,
+            "token_set": logfire,
         },
         "dashboard_auth": bool(os.getenv("DASHBOARD_AUTH_TOKEN", "").strip()),
     }

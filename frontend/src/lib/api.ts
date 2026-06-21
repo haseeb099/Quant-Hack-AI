@@ -1,3 +1,5 @@
+import type { MemoryContextResponse } from "@/lib/copilot";
+
 export type DrawdownTier =
   | "normal"
   | "elevated"
@@ -33,6 +35,166 @@ export interface CompetitionScoreResponse {
     value: number;
     raw: number;
   }>;
+}
+
+export type LaunchCheckStatus = "pass" | "warn" | "fail" | "skip";
+
+export interface LaunchReadinessCheck {
+  code: string;
+  label: string;
+  status: LaunchCheckStatus;
+  message: string;
+  remediation?: string | null;
+}
+
+export interface LaunchReadinessResponse {
+  ready: boolean;
+  mode: string;
+  phase: string;
+  data_source: string;
+  competition_launch_at: string;
+  launch_in_seconds: number;
+  launched: boolean;
+  summary: {
+    pass: number;
+    warn: number;
+    fail: number;
+    skip: number;
+  };
+  checks: LaunchReadinessCheck[];
+}
+
+export interface AdaptationPlan {
+  phase: string;
+  timestamp?: string;
+  old_weights: Record<string, number>;
+  new_weights: Record<string, number>;
+  weight_deltas?: Record<string, number>;
+  promoted: boolean;
+  walk_forward?: {
+    oos_return?: number;
+    oos_sharpe?: number;
+    oos_max_dd?: number;
+    baseline_sharpe?: number;
+    sharpe_delta?: number;
+    historical_file?: string | null;
+  };
+  semantic_keys?: number;
+  trade_count?: number;
+}
+
+export interface AdaptationStatusResponse {
+  can_run: boolean;
+  reason: string;
+  scheduled_window_open: boolean;
+  local_time_bst: string;
+  mode: string;
+  engine_running: boolean;
+  engine_paused: boolean;
+  current_weights: Record<string, number>;
+  plan: AdaptationPlan | null;
+  plan_exists: boolean;
+  last_promoted: boolean;
+}
+
+export interface AdaptationRunResponse {
+  ok: boolean;
+  plan: AdaptationPlan;
+  message: string;
+}
+
+export type OperatorStepStatus = "pass" | "warn" | "fail" | "manual";
+
+export interface OperatorRunbookStep {
+  id: string;
+  label: string;
+  check: string;
+  status: OperatorStepStatus;
+  detail: string;
+}
+
+export interface OperatorRunbookPhase {
+  id: string;
+  title: string;
+  steps: OperatorRunbookStep[];
+  summary: { pass: number; total: number };
+}
+
+export interface PreflightCheck {
+  code: string;
+  label: string;
+  passed: boolean;
+  detail: string;
+  remediation?: string;
+}
+
+export interface PreflightResponse {
+  passed: number;
+  total: number;
+  ready: boolean;
+  checks: PreflightCheck[];
+}
+
+export interface OperatorRunbookResponse {
+  timestamp_bst: string;
+  phase: string;
+  mode: string;
+  preflight: PreflightResponse;
+  launch_readiness: boolean;
+  phases: OperatorRunbookPhase[];
+}
+
+export interface NorthflankService {
+  name: string;
+  dockerfile: string;
+  ready: boolean;
+  volume_mounts: string[];
+  public: boolean;
+  port?: number;
+}
+
+export interface NorthflankDeployResponse {
+  platform: string;
+  services: NorthflankService[];
+  env_configured: Record<string, boolean>;
+  smoke_commands: string[];
+  docs: string;
+  preflight: PreflightResponse;
+}
+
+export interface NotionSyncChannelStats {
+  success?: number;
+  failure?: number;
+  last_at?: string | null;
+  last_error?: string | null;
+}
+
+export interface NotionStatusResponse {
+  enabled: boolean;
+  notion_sync_enabled?: boolean;
+  api_key_set: boolean;
+  databases: {
+    trade_journal: boolean;
+    agent_performance: boolean;
+    risk_events: boolean;
+    tasks: boolean;
+  };
+  sync_stats: Record<string, NotionSyncChannelStats>;
+}
+
+export interface NotionTask {
+  id: string;
+  title: string;
+  status: string;
+  step: number | null;
+  url?: string | null;
+}
+
+export interface NotionTasksResponse {
+  tasks: NotionTask[];
+  enabled: boolean;
+  count?: number;
+  message?: string;
 }
 
 export interface EngineHealthResponse {
@@ -315,16 +477,20 @@ export interface TicksPayload {
 
 const API_BASE = "/api";
 
-function authHeaders(): HeadersInit {
+export function getApiAuthHeaders(contentType = "application/json"): Record<string, string> {
   const token = import.meta.env.VITE_DASHBOARD_AUTH_TOKEN as string | undefined;
   const headers: Record<string, string> = {
     Accept: "application/json",
-    "Content-Type": "application/json",
+    "Content-Type": contentType,
   };
   if (token?.trim()) {
     headers.Authorization = `Bearer ${token.trim()}`;
   }
   return headers;
+}
+
+function authHeaders(): HeadersInit {
+  return getApiAuthHeaders();
 }
 
 async function fetchJson<T>(path: string): Promise<T> {
@@ -547,9 +713,26 @@ export const api = {
 
   getCompetitionScore: () => fetchJson<CompetitionScoreResponse>("/competition-score"),
 
+  getLaunchReadiness: () =>
+    fetchJson<LaunchReadinessResponse>("/competition/launch-readiness"),
+
   getEngineHealth: () => fetchJson<EngineHealthResponse>("/health/engine"),
 
   getIntegrations: () => fetchJson<Record<string, unknown>>("/integrations"),
+
+  getNotionStatus: () => fetchJson<NotionStatusResponse>("/notion/status"),
+
+  getNotionTasks: (limit = 30) =>
+    fetchJson<NotionTasksResponse>(`/notion/tasks?limit=${limit}`),
+
+  getOperatorRunbook: () => fetchJson<OperatorRunbookResponse>("/operator/runbook"),
+
+  getOperatorPreflight: (zmqOnly = true, withCycle = false) =>
+    fetchJson<PreflightResponse>(
+      `/operator/preflight?zmq_only=${zmqOnly}&with_cycle=${withCycle}`,
+    ),
+
+  getNorthflankDeploy: () => fetchJson<NorthflankDeployResponse>("/deploy/northflank"),
 
   getAgentAttribution: () =>
     fetchJson<{ attribution: AgentAttribution[]; total_closed_trades: number }>(
@@ -621,6 +804,25 @@ export const api = {
     if (params.price != null) search.set("price", String(params.price));
     return fetchJson<TradeCheckResponse>(`/risk/check-trade?${search.toString()}`);
   },
+
+  getMemoryContext: (symbol?: string) => {
+    const qs = symbol ? `?symbol=${encodeURIComponent(symbol)}` : "";
+    return fetchJson<MemoryContextResponse>(`/memory/context${qs}`);
+  },
+
+  getWorkingMemory: () =>
+    fetchJson<{
+      trades: MemoryContextResponse["working_memory"];
+      count: number;
+      capacity: number;
+    }>("/memory/working"),
+
+  getAdaptationStatus: () => fetchJson<AdaptationStatusResponse>("/adaptation/status"),
+
+  getAdaptationPlan: () => fetchJson<{ plan: AdaptationPlan | null; exists: boolean }>("/adaptation/plan"),
+
+  runAdaptation: (body: { confirm: boolean; phase?: string; data_dir?: string }) =>
+    postJson<AdaptationRunResponse>("/adaptation/run", body),
 };
 
 export const queryKeys = {
@@ -637,6 +839,12 @@ export const queryKeys = {
   marketLive: ["marketLive"] as const,
   equityCurve: ["equityCurve"] as const,
   competitionScore: ["competitionScore"] as const,
+  launchReadiness: ["launchReadiness"] as const,
+  adaptationStatus: ["adaptationStatus"] as const,
+  notionStatus: ["notionStatus"] as const,
+  notionTasks: ["notionTasks"] as const,
+  operatorRunbook: ["operatorRunbook"] as const,
+  northflankDeploy: ["northflankDeploy"] as const,
   engineHealth: ["engineHealth"] as const,
   agentAttribution: ["agentAttribution"] as const,
   controlState: ["controlState"] as const,
@@ -645,6 +853,7 @@ export const queryKeys = {
     direction: string;
     volume: number;
   }) => ["tradeCheck", params] as const,
+  memoryContext: (symbol?: string) => ["memoryContext", symbol] as const,
 };
 
 export const DRAWDOWN_TIERS: { tier: DrawdownTier; label: string; maxPct: number }[] = [
