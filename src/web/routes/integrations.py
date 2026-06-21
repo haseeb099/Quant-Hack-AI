@@ -23,6 +23,7 @@ def get_integrations() -> dict:
             "trade_journal_ds": bool(os.getenv("NOTION_TRADE_JOURNAL_DS_ID")),
             "agent_perf_ds": bool(os.getenv("NOTION_AGENT_PERF_DS_ID")),
             "risk_events_ds": bool(os.getenv("NOTION_RISK_EVENTS_DS_ID")),
+            "tasks_ds": bool(os.getenv("NOTION_TASKS_DS_ID")),
         },
         "logfire": {
             "enabled": is_logfire_active(),
