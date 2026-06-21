@@ -315,16 +315,20 @@ export interface TicksPayload {
 
 const API_BASE = "/api";
 
-function authHeaders(): HeadersInit {
+export function getApiAuthHeaders(contentType = "application/json"): Record<string, string> {
   const token = import.meta.env.VITE_DASHBOARD_AUTH_TOKEN as string | undefined;
   const headers: Record<string, string> = {
     Accept: "application/json",
-    "Content-Type": "application/json",
+    "Content-Type": contentType,
   };
   if (token?.trim()) {
     headers.Authorization = `Bearer ${token.trim()}`;
   }
   return headers;
+}
+
+function authHeaders(): HeadersInit {
+  return getApiAuthHeaders();
 }
 
 async function fetchJson<T>(path: string): Promise<T> {
