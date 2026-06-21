@@ -131,6 +131,7 @@ export function useCopilotChat(initialSymbol?: string | null) {
                     confidence: event.confidence,
                     risks: event.risks,
                     trade_check: event.trade_check,
+                    memory: event.memory,
                     provider: event.provider,
                   } as CopilotAnalysis,
                 };

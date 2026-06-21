@@ -74,6 +74,18 @@ export function CopilotMessageBubble({ message }: CopilotMessageBubbleProps) {
           </ul>
         )}
 
+        {!isUser && message.analysis?.memory?.semantic?.best_agent && (
+          <p className="text-xs text-muted-foreground">
+            Memory favors{" "}
+            <span className="text-foreground">
+              {message.analysis.memory.semantic.best_agent.replace(/_/g, " ")}
+            </span>
+            {message.analysis.memory.semantic.sample_count != null && (
+              <span> (n={message.analysis.memory.semantic.sample_count})</span>
+            )}
+          </p>
+        )}
+
         {!isUser && message.citations && message.citations.length > 0 && (
           <CopilotCitations citations={message.citations} />
         )}

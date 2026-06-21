@@ -25,10 +25,54 @@ export interface CopilotAnalysis {
     reasoning: string;
   }>;
   trade_check: Record<string, unknown>;
+  memory?: MemoryContextResponse;
   data_citations: DataCitation[];
   provider: string;
   refused: boolean;
   refusal_reason?: string | null;
+}
+
+export interface MemorySemanticAgent {
+  agent: string;
+  trades: number;
+  win_rate: number;
+  avg_r: number;
+}
+
+export interface MemoryWorkingTrade {
+  trade_id: string;
+  symbol: string;
+  session: string;
+  regime: string;
+  agent: string;
+  direction: string;
+  r_multiple?: number | null;
+  pnl?: number | null;
+  entry_time?: string;
+  exit_time?: string;
+}
+
+export interface MemoryContextResponse {
+  session: string;
+  symbol?: string | null;
+  working_memory: MemoryWorkingTrade[];
+  semantic: {
+    symbol?: string;
+    regime?: string;
+    session?: string;
+    best_agent?: string | null;
+    best_agent_score?: number;
+    sample_count?: number;
+    agents?: MemorySemanticAgent[];
+    min_samples?: number;
+  };
+  similar_setups: MemoryWorkingTrade[];
+  total_trades_in_db: number;
+  layers: {
+    working: number;
+    episodic: number;
+    semantic_keys: number;
+  };
 }
 
 export type CopilotSSEEvent =
@@ -42,6 +86,7 @@ export type CopilotSSEEvent =
       confidence: number;
       risks: string[];
       trade_check: Record<string, unknown>;
+      memory?: MemoryContextResponse;
       provider: string;
     }
   | { type: "done"; analysis: CopilotAnalysis | null }
