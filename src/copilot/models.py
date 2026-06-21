@@ -32,6 +32,7 @@ class SymbolAnalysisResponse(BaseModel):
     market: dict[str, Any] = Field(default_factory=dict)
     agent_consensus: list[AgentVoteSummary] = Field(default_factory=list)
     trade_check: dict[str, Any] = Field(default_factory=dict)
+    memory: dict[str, Any] = Field(default_factory=dict)
     data_citations: list[DataCitation] = Field(default_factory=list)
     provider: str = "template"
     refused: bool = False

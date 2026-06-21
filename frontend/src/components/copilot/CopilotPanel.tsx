@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { CopilotMessageBubble } from "@/components/copilot/CopilotMessageBubble";
+import { MemoryContextStrip } from "@/components/copilot/MemoryContextStrip";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useCopilotChat } from "@/hooks/useCopilotChat";
@@ -116,6 +117,8 @@ export function CopilotPanel({ open, onToggle, className }: CopilotPanelProps) {
           </Button>
         </div>
       </header>
+
+      <MemoryContextStrip symbol={symbol} />
 
       <div className="border-b border-border px-4 py-2">
         <label className="mb-1 block text-[10px] uppercase tracking-wide text-muted-foreground">

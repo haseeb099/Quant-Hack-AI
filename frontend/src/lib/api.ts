@@ -1,3 +1,5 @@
+import type { MemoryContextResponse } from "@/lib/copilot";
+
 export type DrawdownTier =
   | "normal"
   | "elevated"
@@ -625,6 +627,18 @@ export const api = {
     if (params.price != null) search.set("price", String(params.price));
     return fetchJson<TradeCheckResponse>(`/risk/check-trade?${search.toString()}`);
   },
+
+  getMemoryContext: (symbol?: string) => {
+    const qs = symbol ? `?symbol=${encodeURIComponent(symbol)}` : "";
+    return fetchJson<MemoryContextResponse>(`/memory/context${qs}`);
+  },
+
+  getWorkingMemory: () =>
+    fetchJson<{
+      trades: MemoryContextResponse["working_memory"];
+      count: number;
+      capacity: number;
+    }>("/memory/working"),
 };
 
 export const queryKeys = {
@@ -649,6 +663,7 @@ export const queryKeys = {
     direction: string;
     volume: number;
   }) => ["tradeCheck", params] as const,
+  memoryContext: (symbol?: string) => ["memoryContext", symbol] as const,
 };
 
 export const DRAWDOWN_TIERS: { tier: DrawdownTier; label: string; maxPct: number }[] = [

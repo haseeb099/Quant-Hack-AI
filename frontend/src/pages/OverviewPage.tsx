@@ -10,6 +10,7 @@ import {
 } from "recharts";
 import { MetricCard } from "@/components/shared/MetricCard";
 import { EngineHealthPanel } from "@/components/shared/EngineHealthPanel";
+import { MemoryContextCard } from "@/components/shared/MemoryContextCard";
 import { TradingControlBar } from "@/components/shared/TradingControlBar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -211,7 +212,10 @@ export function OverviewPage() {
 
       <div className="grid gap-4 md:grid-cols-2">
         <EngineHealthPanel />
+        <MemoryContextCard />
+      </div>
 
+      <div className="grid gap-4 md:grid-cols-2">
         <Card className="bg-panel border-border/60">
           <CardHeader>
             <CardTitle>Risk Snapshot</CardTitle>

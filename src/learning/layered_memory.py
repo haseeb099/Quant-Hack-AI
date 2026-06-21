@@ -234,3 +234,11 @@ class LayeredMemory:
 
     def working_memory_summary(self) -> list[dict[str, Any]]:
         return [asdict(r) for r in self._working]
+
+    def trade_count(self) -> int:
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute("SELECT COUNT(*) FROM trades").fetchone()
+        return int(row[0]) if row else 0
+
+    def semantic_key_count(self) -> int:
+        return len(self._semantic)

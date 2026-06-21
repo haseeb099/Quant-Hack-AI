@@ -85,6 +85,7 @@ async def copilot_chat(body: ChatRequest, request: Request) -> StreamingResponse
             "confidence": analysis.confidence,
             "risks": analysis.risks,
             "trade_check": analysis.trade_check,
+            "memory": analysis.memory,
             "provider": analysis.provider,
         })
         yield _sse({"type": "done", "analysis": analysis.model_dump()})
