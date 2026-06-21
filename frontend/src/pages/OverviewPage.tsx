@@ -9,10 +9,12 @@ import {
   YAxis,
 } from "recharts";
 import { MetricCard } from "@/components/shared/MetricCard";
+import { DeployStatusCard } from "@/components/shared/DeployStatusCard";
 import { EngineHealthPanel } from "@/components/shared/EngineHealthPanel";
 import { LaunchReadinessPanel } from "@/components/shared/LaunchReadinessPanel";
 import { MemoryContextCard } from "@/components/shared/MemoryContextCard";
 import { NotionSyncPanel } from "@/components/shared/NotionSyncPanel";
+import { OperatorRunbookPanel } from "@/components/shared/OperatorRunbookPanel";
 import { TradingControlBar } from "@/components/shared/TradingControlBar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -217,6 +219,13 @@ export function OverviewPage() {
           <LaunchReadinessPanel />
         </div>
         <NotionSyncPanel />
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-3">
+        <div className="lg:col-span-2">
+          <OperatorRunbookPanel />
+        </div>
+        <DeployStatusCard />
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
