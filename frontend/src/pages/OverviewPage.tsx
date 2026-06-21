@@ -9,6 +9,7 @@ import {
   YAxis,
 } from "recharts";
 import { MetricCard } from "@/components/shared/MetricCard";
+import { CompetitionDayPanel } from "@/components/shared/CompetitionDayPanel";
 import { DeployStatusCard } from "@/components/shared/DeployStatusCard";
 import { EngineHealthPanel } from "@/components/shared/EngineHealthPanel";
 import { LaunchReadinessPanel } from "@/components/shared/LaunchReadinessPanel";
@@ -225,8 +226,10 @@ export function OverviewPage() {
         <div className="lg:col-span-2">
           <OperatorRunbookPanel />
         </div>
-        <DeployStatusCard />
+        <CompetitionDayPanel />
       </div>
+
+      <DeployStatusCard />
 
       <div className="grid gap-4 md:grid-cols-2">
         <EngineHealthPanel />

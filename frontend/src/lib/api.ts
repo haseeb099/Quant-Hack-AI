@@ -210,6 +210,40 @@ export interface TechnologyPrizeResponse {
   notion_doc: string;
 }
 
+export interface CompetitionSession {
+  phase: string;
+  label: string;
+  local_time_bst: string;
+  launch_at_bst: string;
+  seconds_to_launch: number;
+  launched: boolean;
+}
+
+export interface VerificationCheck {
+  code: string;
+  label: string;
+  passed: boolean;
+  detail: string;
+  remediation?: string;
+}
+
+export interface OperatorVerificationResponse {
+  last_run_at: string | null;
+  last_mode: string | null;
+  ready: boolean;
+  passed: number;
+  total: number;
+  checks: VerificationCheck[];
+  session: CompetitionSession | null;
+  has_run: boolean;
+}
+
+export interface OperatorVerificationRunResponse extends OperatorVerificationResponse {
+  ok: boolean;
+  mode: string;
+  launch_readiness?: boolean;
+}
+
 export interface NotionSyncChannelStats {
   success?: number;
   failure?: number;
@@ -787,6 +821,12 @@ export const api = {
   getTechnologyPrizeChecklist: () =>
     fetchJson<TechnologyPrizeResponse>("/prize/technology-checklist"),
 
+  getOperatorVerification: () =>
+    fetchJson<OperatorVerificationResponse>("/operator/verification"),
+
+  runOperatorVerification: (body: { confirm: boolean; quick?: boolean }) =>
+    postJson<OperatorVerificationRunResponse>("/operator/verification/run", body),
+
   getAgentAttribution: () =>
     fetchJson<{ attribution: AgentAttribution[]; total_closed_trades: number }>(
       "/agents/attribution",
@@ -899,6 +939,7 @@ export const queryKeys = {
   operatorRunbook: ["operatorRunbook"] as const,
   demoWalkthrough: ["demoWalkthrough"] as const,
   technologyPrize: ["technologyPrize"] as const,
+  operatorVerification: ["operatorVerification"] as const,
   northflankDeploy: ["northflankDeploy"] as const,
   engineHealth: ["engineHealth"] as const,
   agentAttribution: ["agentAttribution"] as const,
