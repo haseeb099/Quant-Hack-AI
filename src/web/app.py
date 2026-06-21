@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.web.routes import adaptation, agents, competition, control, copilot, instruments, integrations, market, memory, notion, operator, positions, risk, status, trades
+from src.web.routes import adaptation, agents, competition, control, copilot, demo, instruments, integrations, market, memory, notion, operator, positions, risk, status, trades
 from src.web.ws import manager, websocket_endpoint
 
 logger = logging.getLogger(__name__)
@@ -59,6 +59,7 @@ def create_app() -> FastAPI | None:
     app.include_router(integrations.router)
     app.include_router(notion.router)
     app.include_router(operator.router)
+    app.include_router(demo.router)
     app.include_router(trades.router)
     app.include_router(positions.router)
     app.include_router(agents.router)
