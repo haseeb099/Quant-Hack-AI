@@ -1,0 +1,72 @@
+# Market intelligence layer — news, calendar, sentiment, macro
+intelligence:
+  enabled: true
+  refresh_minutes: 5
+  llm_budget_per_cycle_usd: 0.10
+  cache_dir: data/intelligence
+
+  calendar:
+    source: fixture  # fixture | cache | forex_factory
+    tier_1_window_minutes: 30
+    tier_2_window_minutes: 15
+    tier_2_size_multiplier: 0.5
+    tier_2_min_confidence: 0.80
+
+  news:
+    source: fixture  # fixture | newsapi | rss
+    max_headlines_per_symbol: 20
+    lookback_hours: 4
+    newsapi_base_url: https://newsapi.org/v2/everything
+
+  sentiment:
+    min_headlines: 3
+    llm_enabled: true
+    lexicon_fallback: true
+
+  macro:
+    fear_greed_enabled: true
+    fear_greed_url: https://api.alternative.me/fng/
+
+event_impact_tiers:
+  tier_1:
+    - Non-Farm Payrolls
+    - FOMC
+    - CPI
+    - ECB Rate Decision
+    - Federal Funds Rate
+  tier_2:
+    - GDP
+    - PMI
+    - Retail Sales
+    - Unemployment Rate
+    - PPI
+  tier_3:
+    - Consumer Confidence
+    - Trade Balance
+    - Housing Starts
+
+symbol_queries:
+  BTC/USD: [bitcoin, BTC, crypto regulation]
+  ETH/USD: [ethereum, ETH, crypto]
+  SOL/USD: [solana, SOL, crypto]
+  XRP/USD: [ripple, XRP, crypto]
+  BAR/USD: [crypto, altcoin]
+  XAU/USD: [gold price, XAU, safe haven, Fed]
+  XAG/USD: [silver price, XAG, precious metals]
+  EUR/USD: [euro, ECB, EURUSD]
+  GBP/USD: [pound sterling, BOE, GBPUSD]
+  USD/JPY: [yen, BOJ, USDJPY]
+  AUD/USD: [australian dollar, RBA, AUDUSD]
+  USD/CAD: [canadian dollar, BOC, USDCAD]
+  USD/CHF: [swiss franc, SNB, USDCHF]
+  EUR/GBP: [euro pound, EURGBP]
+  EUR/CHF: [euro franc, EURCHF]
+
+currency_symbols:
+  USD: [BTC/USD, ETH/USD, SOL/USD, XRP/USD, BAR/USD, XAU/USD, XAG/USD, USD/JPY, AUD/USD, USD/CAD, USD/CHF]
+  EUR: [EUR/USD, EUR/GBP, EUR/CHF]
+  GBP: [GBP/USD, EUR/GBP]
+  JPY: [USD/JPY]
+  AUD: [AUD/USD]
+  CAD: [USD/CAD]
+  CHF: [USD/CHF, EUR/CHF]

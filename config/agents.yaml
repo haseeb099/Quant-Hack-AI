@@ -1,7 +1,7 @@
 # Agent configuration — base weights and parameters
 agents:
   trend_surfer:
-    weight: 0.30
+    weight: 0.25
     timeframes: [H1, H4]
     ema_fast: 9
     ema_medium: 21
@@ -14,7 +14,7 @@ agents:
     best_regimes: [trending, volatile]
 
   breakout_hunter:
-    weight: 0.30
+    weight: 0.25
     timeframes: [M15, H1]
     donchian_period: 20
     bb_squeeze_percentile: 5
@@ -50,6 +50,17 @@ agents:
     max_confidence: 0.90
     best_regimes: [ranging, calm]
 
+  sentiment_agent:
+    weight: 0.10
+    timeframes: [M15]
+    min_score: 0.4
+    min_confidence: 0.70
+    stop_atr_mult: 1.5
+    target_atr_mult: 2.5
+    base_confidence: 0.65
+    max_confidence: 0.85
+    best_regimes: [volatile, calm]
+
   meta_orchestrator:
     model: claude-sonnet-4-20250514
     temperature: 0.1
@@ -65,18 +76,22 @@ regime_boosts:
     breakout_hunter: 1.0
     momentum_pulse: 1.2
     mean_reversion: 0.5
+    sentiment_agent: 0.9
   ranging:
     trend_surfer: 0.6
     breakout_hunter: 0.7
     momentum_pulse: 0.8
     mean_reversion: 1.4
+    sentiment_agent: 1.0
   volatile:
     trend_surfer: 1.0
     breakout_hunter: 1.3
     momentum_pulse: 1.1
     mean_reversion: 0.6
+    sentiment_agent: 1.3
   calm:
     trend_surfer: 0.8
     breakout_hunter: 1.2
     momentum_pulse: 0.7
     mean_reversion: 1.1
+    sentiment_agent: 1.2

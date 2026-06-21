@@ -479,6 +479,9 @@ export interface Instrument {
   tick_age_ms?: number | null;
   market_health?: MarketHealth | null;
   bar_age_sec?: number | null;
+  sentiment_score?: number | null;
+  sentiment_confidence?: number | null;
+  sentiment_summary?: string | null;
 }
 
 export interface InstrumentsResponse {
@@ -916,6 +919,32 @@ export const api = {
 
   runAdaptation: (body: { confirm: boolean; phase?: string; data_dir?: string }) =>
     postJson<AdaptationRunResponse>("/adaptation/run", body),
+
+  getIntelligenceSnapshot: () =>
+    fetchJson<{
+      enabled: boolean;
+      macro?: { bias: string; usd_strength: string; fear_greed?: number; notes?: string };
+      upcoming_events?: Array<{
+        name: string;
+        currency: string;
+        impact: string;
+        scheduled_at: string;
+      }>;
+      sentiment?: Record<
+        string,
+        {
+          score: number;
+          confidence: number;
+          headline_count: number;
+          summary: string;
+        }
+      >;
+    }>("/intelligence/snapshot"),
+
+  getIntelligenceCalendar: (hours = 8) =>
+    fetchJson<{ events: Array<{ name: string; currency: string; impact: string; scheduled_at: string }>; enabled: boolean }>(
+      `/intelligence/calendar?hours=${hours}`,
+    ),
 };
 
 export const queryKeys = {
@@ -950,6 +979,8 @@ export const queryKeys = {
     volume: number;
   }) => ["tradeCheck", params] as const,
   memoryContext: (symbol?: string) => ["memoryContext", symbol] as const,
+  intelligence: ["intelligence"] as const,
+  intelligenceCalendar: ["intelligenceCalendar"] as const,
 };
 
 export const DRAWDOWN_TIERS: { tier: DrawdownTier; label: string; maxPct: number }[] = [
