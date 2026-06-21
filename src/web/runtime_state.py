@@ -65,8 +65,8 @@ def default_state() -> dict[str, Any]:
     }
 
 
-def read_state(path: Path | str = STATE_PATH) -> dict[str, Any]:
-    p = Path(path)
+def read_state(path: Path | str | None = None) -> dict[str, Any]:
+    p = Path(path if path is not None else STATE_PATH)
     if not p.exists():
         return default_state()
     try:

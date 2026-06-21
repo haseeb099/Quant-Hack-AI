@@ -51,17 +51,17 @@ def get_agent_attribution() -> dict:
         working = memory.get_working_memory()
         by_agent: dict[str, dict] = {}
         for trade in working:
-            agent = str(trade.get("agent", "unknown"))
+            agent = trade.agent
             bucket = by_agent.setdefault(
                 agent,
                 {"agent": agent, "trades": 0, "wins": 0, "total_r": 0.0, "symbols": set()},
             )
             bucket["trades"] += 1
-            r = float(trade.get("r_multiple", 0))
+            r = float(trade.r_multiple or 0)
             bucket["total_r"] += r
             if r > 0:
                 bucket["wins"] += 1
-            bucket["symbols"].add(str(trade.get("symbol", "")))
+            bucket["symbols"].add(trade.symbol)
         rows = []
         for agent, data in by_agent.items():
             n = data["trades"]

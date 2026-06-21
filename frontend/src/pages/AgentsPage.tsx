@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { AgentVoteBar } from "@/components/shared/AgentVoteBar";
+import { AdaptationPanel } from "@/components/shared/AdaptationPanel";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api, queryKeys } from "@/lib/api";
@@ -75,6 +76,8 @@ export function AgentsPage() {
               </Card>
             ))}
       </div>
+
+      <AdaptationPanel />
 
       <Card className="bg-panel border-border/60">
         <CardHeader>
