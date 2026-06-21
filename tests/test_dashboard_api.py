@@ -93,3 +93,70 @@ def test_equity_curve(client):
     r = client.get("/api/equity-curve")
     assert r.status_code == 200
     assert "history" in r.json()
+
+
+def test_competition_score(client):
+    r = client.get("/api/competition-score")
+    assert r.status_code == 200
+    body = r.json()
+    assert "total" in body
+    assert len(body["components"]) == 4
+
+
+def test_engine_health(client):
+    r = client.get("/api/health/engine")
+    assert r.status_code == 200
+    body = r.json()
+    assert "engine_running" in body
+    assert "data_source" in body
+
+
+def test_integrations(client):
+    r = client.get("/api/integrations")
+    assert r.status_code == 200
+    body = r.json()
+    assert "notion" in body
+    assert "logfire" in body
+
+
+def test_status_data_source(client):
+    r = client.get("/api/status")
+    assert r.status_code == 200
+    assert "data_source" in r.json()
+
+
+def test_trades_status_filter(client):
+    r = client.get("/api/trades?status=decision")
+    assert r.status_code == 200
+    assert r.json()["total"] >= 1
+
+
+def test_positions_totals(client):
+    r = client.get("/api/positions")
+    assert r.status_code == 200
+    body = r.json()
+    assert "total_exposure" in body
+    assert "total_unrealized_pnl" in body
+
+
+def test_agent_attribution(client):
+    r = client.get("/api/agents/attribution")
+    assert r.status_code == 200
+    assert "attribution" in r.json()
+
+
+def test_check_trade_allowed(client):
+    r = client.get("/api/risk/check-trade?symbol=EUR/USD&direction=BUY&volume=0.01")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["allowed"] is True
+    assert "blockers" in body
+    assert "projected" in body
+
+
+def test_check_trade_invalid_symbol(client):
+    r = client.get("/api/risk/check-trade?symbol=NOTREAL/USD&direction=BUY&volume=0.01")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["allowed"] is False
+    assert any(b["code"] == "INVALID_SYMBOL" for b in body["blockers"])

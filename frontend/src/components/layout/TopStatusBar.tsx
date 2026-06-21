@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { ConnectionIndicators } from "@/components/shared/ConnectionIndicators";
+import { DataSourceBadge } from "@/components/shared/DataSourceBadge";
 import { TradingControlBar } from "@/components/shared/TradingControlBar";
 import { PhaseBadge } from "@/components/shared/PhaseBadge";
 import { Separator } from "@/components/ui/separator";
@@ -46,6 +47,7 @@ export function TopStatusBar({ wsConnected }: TopStatusBarProps) {
           {status && (
             <PhaseBadge phase={status.phase} ddTier={risk?.dd_tier} />
           )}
+          {status && <DataSourceBadge status={status} />}
           <Separator orientation="vertical" className="h-6" />
           <ConnectionIndicators
             wsConnected={wsConnected}

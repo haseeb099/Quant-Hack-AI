@@ -25,6 +25,12 @@ export function AgentsPage() {
     refetchInterval: 15_000,
   });
 
+  const { data: attribution } = useQuery({
+    queryKey: queryKeys.agentAttribution,
+    queryFn: api.getAgentAttribution,
+    refetchInterval: 60_000,
+  });
+
   const sortedAgents = [...(agents ?? [])].sort(
     (a, b) => AGENT_ORDER.indexOf(a.agent) - AGENT_ORDER.indexOf(b.agent),
   );
@@ -69,6 +75,47 @@ export function AgentsPage() {
               </Card>
             ))}
       </div>
+
+      <Card className="bg-panel border-border/60">
+        <CardHeader>
+          <CardTitle>
+            Closed Trade Attribution
+            {attribution ? ` · ${attribution.total_closed_trades} trades` : ""}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {attribution?.attribution?.length ? (
+            <div className="grid gap-3 md:grid-cols-2">
+              {attribution.attribution.map((row) => (
+                <div
+                  key={row.agent}
+                  className="rounded-lg border border-border/60 p-3 text-sm"
+                >
+                  <div className="font-medium">{row.label}</div>
+                  <div className="mt-2 flex justify-between text-muted-foreground">
+                    <span>Trades</span>
+                    <span className="font-mono text-foreground">{row.trades}</span>
+                  </div>
+                  <div className="flex justify-between text-muted-foreground">
+                    <span>Win rate</span>
+                    <span className="font-mono text-foreground">
+                      {(row.win_rate * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-muted-foreground">
+                    <span>Avg R</span>
+                    <span className="font-mono text-foreground">{row.avg_r.toFixed(2)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No closed trades in memory yet
+            </p>
+          )}
+        </CardContent>
+      </Card>
 
       <Card className="bg-panel border-border/60">
         <CardHeader>

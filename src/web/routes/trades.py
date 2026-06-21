@@ -39,7 +39,13 @@ def list_trades(
     if symbol:
         trades = [t for t in trades if t.get("symbol") == symbol]
     if status:
-        trades = [t for t in trades if t.get("status") == status]
+        want = status.lower()
+        trades = [
+            t for t in trades
+            if want in str(t.get("status", "")).lower()
+            or (want == "executed" and str(t.get("status", "")).lower() in ("ok", "executed"))
+            or (want == "error" and str(t.get("status", "")).lower() in ("error", "failed"))
+        ]
     total = len(trades)
     page = list(reversed(trades))[offset: offset + limit]
     return {"total": total, "limit": limit, "offset": offset, "trades": page}

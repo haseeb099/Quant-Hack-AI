@@ -9,21 +9,13 @@ import {
   YAxis,
 } from "recharts";
 import { MetricCard } from "@/components/shared/MetricCard";
+import { EngineHealthPanel } from "@/components/shared/EngineHealthPanel";
 import { TradingControlBar } from "@/components/shared/TradingControlBar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  api,
-  COMPETITION_WEIGHTS,
-  queryKeys,
-} from "@/lib/api";
-import {
-  formatCurrency,
-  formatPercent,
-  formatTimestamp,
-  pnlColorClass,
-} from "@/lib/utils";
+import { api, queryKeys } from "@/lib/api";
+import { formatCurrency, formatPercent, pnlColorClass } from "@/lib/utils";
 
 export function OverviewPage() {
   const { data: account, isLoading: accountLoading } = useQuery({
@@ -38,58 +30,23 @@ export function OverviewPage() {
     refetchInterval: 15_000,
   });
 
-  const { data: status, isLoading: statusLoading } = useQuery({
-    queryKey: queryKeys.status,
-    queryFn: api.getStatus,
-    refetchInterval: 15_000,
-  });
-
   const { data: equity, isLoading: equityLoading } = useQuery({
     queryKey: queryKeys.equityCurve,
     queryFn: api.getEquityCurve,
     refetchInterval: 30_000,
   });
 
+  const { data: competition, isLoading: scoreLoading } = useQuery({
+    queryKey: queryKeys.competitionScore,
+    queryFn: api.getCompetitionScore,
+    refetchInterval: 30_000,
+  });
+
   const dailyPnl = account?.daily_pnl ?? 0;
   const returnPct = account?.return_pct ?? 0;
-  const drawdownPct = risk?.drawdown_pct ?? 0;
 
-  const returnScore = Math.min(100, Math.max(0, (returnPct / 30) * 100));
-  const drawdownScore = Math.min(
-    100,
-    Math.max(0, 100 - (drawdownPct / 0.15) * 100),
-  );
-  const sharpeScore = risk?.sharpe
-    ? Math.min(100, Math.max(0, risk.sharpe * 25))
-    : 0;
-
-  const scoreBreakdown = [
-    {
-      label: "Return",
-      weight: COMPETITION_WEIGHTS.return,
-      value: returnScore,
-    },
-    {
-      label: "Drawdown",
-      weight: COMPETITION_WEIGHTS.drawdown,
-      value: drawdownScore,
-    },
-    {
-      label: "Sharpe",
-      weight: COMPETITION_WEIGHTS.sharpe,
-      value: sharpeScore,
-    },
-    {
-      label: "Risk Discipline",
-      weight: COMPETITION_WEIGHTS.discipline,
-      value: risk?.discipline ?? 0,
-    },
-  ];
-
-  const weightedTotal = scoreBreakdown.reduce(
-    (sum, item) => sum + item.value * item.weight,
-    0,
-  );
+  const scoreBreakdown = competition?.components ?? [];
+  const weightedTotal = competition?.total ?? 0;
 
   const chartData =
     equity?.points.map((p) => ({
@@ -223,9 +180,13 @@ export function OverviewPage() {
             <CardTitle>Competition Score</CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
-            <div className="font-mono text-3xl font-semibold text-primary">
-              {weightedTotal.toFixed(1)}
-            </div>
+            {scoreLoading ? (
+              <Skeleton className="h-10 w-24" />
+            ) : (
+              <div className="font-mono text-3xl font-semibold text-primary">
+                {weightedTotal.toFixed(1)}
+              </div>
+            )}
             <div className="flex flex-col gap-3">
               {scoreBreakdown.map((item) => (
                 <div key={item.label} className="flex flex-col gap-1">
@@ -249,6 +210,8 @@ export function OverviewPage() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
+        <EngineHealthPanel />
+
         <Card className="bg-panel border-border/60">
           <CardHeader>
             <CardTitle>Risk Snapshot</CardTitle>
@@ -275,54 +238,6 @@ export function OverviewPage() {
                   <Badge variant="outline" className="uppercase">
                     {risk?.dd_tier ?? "—"}
                   </Badge>
-                </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="bg-panel border-border/60">
-          <CardHeader>
-            <CardTitle>Engine Status</CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3">
-            {statusLoading ? (
-              <Skeleton className="h-20 w-full" />
-            ) : (
-              <>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Engine</span>
-                  <Badge variant={status?.engine_running ? "signal" : "destructive"}>
-                    {status?.engine_running ? "Running" : "Stopped"}
-                  </Badge>
-                </div>
-                {status?.mode === "live" && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">MT5 bridge</span>
-                    <Badge variant={status?.mt5_connected ? "signal" : "destructive"}>
-                      {status?.mt5_connected ? "Connected" : "Offline"}
-                    </Badge>
-                  </div>
-                )}
-                {status?.engine_paused && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Trading</span>
-                    <Badge variant="outline" className="text-amber-400">
-                      Paused
-                    </Badge>
-                  </div>
-                )}
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Last cycle</span>
-                  <span className="font-mono text-sm">
-                    {formatTimestamp(status?.last_cycle_at)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Next cycle</span>
-                  <span className="font-mono text-sm">
-                    {formatTimestamp(status?.next_cycle_at)}
-                  </span>
                 </div>
               </>
             )}

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from src.web.engine_registry import control_state, get_connector, get_engine
 from src.web.runtime_state import append_risk_event, read_state, write_state
+from src.risk.pre_trade_gate import TradeCheckRequest, get_pre_trade_gate
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,28 @@ def modify_position(ticket: int, body: ModifyPositionBody) -> dict[str, Any]:
 @router.post("/api/trades/manual")
 def manual_trade(body: ManualTradeBody) -> dict[str, Any]:
     direction = body.direction.upper()
+    gate = get_pre_trade_gate()
+    request = TradeCheckRequest(
+        symbol=body.symbol.strip(),
+        direction=direction,
+        volume=body.volume,
+        sl=body.sl,
+        tp=body.tp,
+    )
+
     engine = get_engine()
+    if engine is not None:
+        check = gate.evaluate_from_engine(engine, request)
+    else:
+        check = gate.evaluate_from_state(read_state(), request)
+
+    if not check.allowed:
+        detail = {
+            "message": "Trade blocked by risk constitution",
+            **check.to_dict(),
+        }
+        raise HTTPException(status_code=422, detail=detail)
+
     if engine is not None:
         result = engine.operator_manual_trade(
             symbol=body.symbol,
@@ -159,6 +181,7 @@ def manual_trade(body: ManualTradeBody) -> dict[str, Any]:
             volume=body.volume,
             sl=body.sl,
             tp=body.tp,
+            skip_risk_check=True,
         )
     else:
         connector = get_connector()
@@ -174,4 +197,4 @@ def manual_trade(body: ManualTradeBody) -> dict[str, Any]:
     resp = _result_response(result, f"MANUAL_{direction}_{body.symbol}")
     if not resp["ok"]:
         raise HTTPException(status_code=502, detail=resp.get("message") or "Trade failed")
-    return resp
+    return {**resp, "risk_check": check.to_dict()}

@@ -65,8 +65,8 @@ def default_state() -> dict[str, Any]:
     }
 
 
-def read_state(path: Path | str = STATE_PATH) -> dict[str, Any]:
-    p = Path(path)
+def read_state(path: Path | str | None = None) -> dict[str, Any]:
+    p = Path(path if path is not None else STATE_PATH)
     if not p.exists():
         return default_state()
     try:
@@ -78,6 +78,24 @@ def read_state(path: Path | str = STATE_PATH) -> dict[str, Any]:
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning("Failed to read runtime state: %s", exc)
         return default_state()
+
+
+def state_age_seconds(state: dict[str, Any]) -> float | None:
+    ts = state.get("timestamp")
+    if not ts:
+        return None
+    try:
+        when = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        return max(0.0, (datetime.now(timezone.utc) - when).total_seconds())
+    except ValueError:
+        return None
+
+
+def is_state_stale(state: dict[str, Any], max_age_sec: float = 60.0) -> bool:
+    if not state.get("engine_running"):
+        return False
+    age = state_age_seconds(state)
+    return age is not None and age > max_age_sec
 
 
 def write_state(state: dict[str, Any], path: Path | str = STATE_PATH) -> None:

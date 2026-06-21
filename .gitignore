@@ -13,8 +13,8 @@ build/
 .venv/
 venv/
 
-# Data
-data/
+# Data (repo root only — keep src/data/ package tracked)
+/data/
 *.db
 *.sqlite3
 

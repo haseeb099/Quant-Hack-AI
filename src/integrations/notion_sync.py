@@ -12,11 +12,33 @@ logger = logging.getLogger(__name__)
 _sync_instance: NotionSync | None = None
 
 
+def _notion_databases_configured() -> bool:
+    return any(
+        os.getenv(key, "").strip()
+        for key in (
+            "NOTION_TRADE_JOURNAL_DS_ID",
+            "NOTION_AGENT_PERF_DS_ID",
+            "NOTION_RISK_EVENTS_DS_ID",
+            "NOTION_TASKS_DS_ID",
+        )
+    )
+
+
+def notion_sync_enabled() -> bool:
+    """True when sync should run: explicit enable, or auto when key + DS IDs are set."""
+    explicit = os.getenv("NOTION_SYNC_ENABLED", "").strip().lower()
+    if explicit in ("0", "false", "no"):
+        return False
+    if explicit in ("1", "true", "yes"):
+        return bool(os.getenv("NOTION_API_KEY", "").strip())
+    return bool(os.getenv("NOTION_API_KEY", "").strip()) and _notion_databases_configured()
+
+
 class NotionSync:
     """Sync trading events to Notion databases. No-ops when disabled or misconfigured."""
 
     def __init__(self) -> None:
-        self.enabled = os.getenv("NOTION_SYNC_ENABLED", "false").lower() in ("1", "true", "yes")
+        self.enabled = notion_sync_enabled()
         self.api_key = os.getenv("NOTION_API_KEY", "")
         self.trade_journal_ds = os.getenv("NOTION_TRADE_JOURNAL_DS_ID", "")
         self.agent_perf_ds = os.getenv("NOTION_AGENT_PERF_DS_ID", "")

@@ -8,6 +8,9 @@ export type DrawdownTier =
 export interface StatusResponse {
   phase: string;
   mode: string;
+  data_source?: "demo" | "simulate" | "live" | string;
+  state_age_sec?: number | null;
+  state_stale?: boolean;
   last_cycle_at: string | null;
   next_cycle_at: string | null;
   connected: boolean;
@@ -19,6 +22,46 @@ export interface StatusResponse {
   zmq_last_error?: string | null;
   last_tick_at?: string | null;
   last_tick_age_ms?: number | null;
+  account_profile?: string | null;
+}
+
+export interface CompetitionScoreResponse {
+  total: number;
+  components: Array<{
+    label: string;
+    weight: number;
+    value: number;
+    raw: number;
+  }>;
+}
+
+export interface EngineHealthResponse {
+  data_source: string;
+  state_stale: boolean;
+  state_age_sec?: number | null;
+  engine_running: boolean;
+  engine_paused: boolean;
+  cycle_in_progress: boolean;
+  mode: string;
+  mt5_connected: boolean;
+  zmq_last_error?: string | null;
+  last_cycle_at?: string | null;
+  next_cycle_at?: string | null;
+  last_tick_at?: string | null;
+  last_tick_age_ms?: number | null;
+  dd_tier?: string;
+  drawdown_pct?: number;
+  discipline?: number;
+  account_profile?: string | null;
+}
+
+export interface AgentAttribution {
+  agent: string;
+  label: string;
+  trades: number;
+  win_rate: number;
+  avg_r: number;
+  symbols: string[];
 }
 
 export interface ControlStateResponse {
@@ -36,6 +79,35 @@ export interface ControlActionResponse {
   status?: string;
   message?: string;
   result?: Record<string, unknown>;
+  risk_check?: TradeCheckResponse;
+}
+
+export interface RiskBlocker {
+  code: string;
+  severity: "critical" | "warning" | "info" | string;
+  message: string;
+  discipline_risk?: number | null;
+  penalty_in_min?: number | null;
+}
+
+export interface TradeCheckResponse {
+  allowed: boolean;
+  blockers: RiskBlocker[];
+  warnings: RiskBlocker[];
+  remediation: string[];
+  projected: Record<string, unknown>;
+}
+
+export class TradeBlockedError extends Error {
+  check: TradeCheckResponse;
+
+  constructor(check: TradeCheckResponse) {
+    super(
+      check.blockers.map((b) => b.message).join(" · ") || "Trade blocked by risk rules",
+    );
+    this.name = "TradeBlockedError";
+    this.check = check;
+  }
 }
 
 export interface AccountResponse {
@@ -344,11 +416,17 @@ export const api = {
     };
   },
 
-  getTrades: async (params?: { limit?: number; offset?: number; symbol?: string }) => {
+  getTrades: async (params?: {
+    limit?: number;
+    offset?: number;
+    symbol?: string;
+    status?: string;
+  }) => {
     const search = new URLSearchParams();
     if (params?.limit != null) search.set("limit", String(params.limit));
     if (params?.offset != null) search.set("offset", String(params.offset));
     if (params?.symbol) search.set("symbol", params.symbol);
+    if (params?.status) search.set("status", params.status);
     const qs = search.toString();
     const raw = await fetchJson<{
       trades: Array<Record<string, unknown>>;
@@ -467,6 +545,17 @@ export const api = {
     return { points: raw.history ?? [] };
   },
 
+  getCompetitionScore: () => fetchJson<CompetitionScoreResponse>("/competition-score"),
+
+  getEngineHealth: () => fetchJson<EngineHealthResponse>("/health/engine"),
+
+  getIntegrations: () => fetchJson<Record<string, unknown>>("/integrations"),
+
+  getAgentAttribution: () =>
+    fetchJson<{ attribution: AgentAttribution[]; total_closed_trades: number }>(
+      "/agents/attribution",
+    ),
+
   getControlState: () => fetchJson<ControlStateResponse>("/control/state"),
 
   pauseEngine: () => postJson<ControlActionResponse>("/engine/pause"),
@@ -486,20 +575,60 @@ export const api = {
   modifyPosition: (ticket: string, body: { sl?: number; tp?: number }) =>
     patchJson<ControlActionResponse>(`/positions/${ticket}`, body),
 
-  manualTrade: (body: {
+  manualTrade: async (body: {
     symbol: string;
     direction: "BUY" | "SELL";
     volume: number;
     sl?: number;
     tp?: number;
-  }) => postJson<ControlActionResponse>("/trades/manual", body),
+  }) => {
+    const res = await fetch(`${API_BASE}/trades/manual`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify(body),
+    });
+    const data = (await res.json().catch(() => ({}))) as ControlActionResponse & {
+      detail?: TradeCheckResponse & { message?: string };
+    };
+    if (res.status === 422 && data.detail && Array.isArray(data.detail.blockers)) {
+      throw new TradeBlockedError(data.detail);
+    }
+    if (!res.ok) {
+      const msg =
+        typeof data.detail === "string"
+          ? data.detail
+          : data.detail?.message || `API /trades/manual failed: ${res.status}`;
+      throw new Error(msg);
+    }
+    return data;
+  },
+
+  checkTrade: (params: {
+    symbol: string;
+    direction: "BUY" | "SELL";
+    volume: number;
+    sl?: number;
+    tp?: number;
+    price?: number;
+  }) => {
+    const search = new URLSearchParams({
+      symbol: params.symbol,
+      direction: params.direction,
+      volume: String(params.volume),
+    });
+    if (params.sl != null) search.set("sl", String(params.sl));
+    if (params.tp != null) search.set("tp", String(params.tp));
+    if (params.price != null) search.set("price", String(params.price));
+    return fetchJson<TradeCheckResponse>(`/risk/check-trade?${search.toString()}`);
+  },
 };
 
 export const queryKeys = {
   status: ["status"] as const,
   account: ["account"] as const,
   positions: ["positions"] as const,
-  trades: (filters?: { symbol?: string; offset?: number }) => ["trades", filters] as const,
+  trades: (filters?: { symbol?: string; offset?: number; status?: string }) =>
+    ["trades", filters] as const,
   trade: (id: string) => ["trade", id] as const,
   agents: ["agents"] as const,
   lastCycle: ["lastCycle"] as const,
@@ -507,7 +636,15 @@ export const queryKeys = {
   instruments: ["instruments"] as const,
   marketLive: ["marketLive"] as const,
   equityCurve: ["equityCurve"] as const,
+  competitionScore: ["competitionScore"] as const,
+  engineHealth: ["engineHealth"] as const,
+  agentAttribution: ["agentAttribution"] as const,
   controlState: ["controlState"] as const,
+  tradeCheck: (params: {
+    symbol: string;
+    direction: string;
+    volume: number;
+  }) => ["tradeCheck", params] as const,
 };
 
 export const DRAWDOWN_TIERS: { tier: DrawdownTier; label: string; maxPct: number }[] = [

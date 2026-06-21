@@ -173,8 +173,8 @@ class TestAgents:
         agent = TrendSurferAgent({})
         features = _make_features(
             close=110.0,
-            ema_9=109.0,
-            ema_21=108.0,
+            ema_9=110.0,
+            ema_21=109.0,
             ema_50=105.0,
             adx=28.0,
             macd_histogram=0.5,
@@ -199,11 +199,17 @@ class TestAgents:
     def test_breakout_hunter_requires_squeeze_and_volume(self):
         agent = BreakoutHunterAgent({})
         features = _make_features(
-            close=102.0,
+            close=101.51,
             donchian_high=101.5,
+            donchian_low=98.0,
             bb_width_percentile=3.0,
             volume_ratio=1.6,
             rsi_14=60.0,
+            extras={
+                "bb_squeeze_bars": 10,
+                "donchian_high_prev": 101.5,
+                "donchian_low_prev": 98.0,
+            },
         )
         signal = agent.analyze(features)
         assert signal.direction == Direction.BUY
@@ -254,6 +260,8 @@ class TestAgents:
                 "macd_line": 0.0,
                 "macd_signal": 0.0,
                 "macd_histogram_prev": 0.0,
+                "rsi_prev": 22.0,
+                "volume_prev_ratio": 1.5,
             },
         )
         signal = agent.analyze(features)

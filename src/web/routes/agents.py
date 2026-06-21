@@ -41,6 +41,43 @@ def get_agents() -> dict:
     return {"agents": _agent_stats()}
 
 
+@router.get("/api/agents/attribution")
+def get_agent_attribution() -> dict:
+    """Per-agent trade attribution from layered memory."""
+    try:
+        from src.learning.layered_memory import LayeredMemory
+
+        memory = LayeredMemory()
+        working = memory.get_working_memory()
+        by_agent: dict[str, dict] = {}
+        for trade in working:
+            agent = str(trade.get("agent", "unknown"))
+            bucket = by_agent.setdefault(
+                agent,
+                {"agent": agent, "trades": 0, "wins": 0, "total_r": 0.0, "symbols": set()},
+            )
+            bucket["trades"] += 1
+            r = float(trade.get("r_multiple", 0))
+            bucket["total_r"] += r
+            if r > 0:
+                bucket["wins"] += 1
+            bucket["symbols"].add(str(trade.get("symbol", "")))
+        rows = []
+        for agent, data in by_agent.items():
+            n = data["trades"]
+            rows.append({
+                "agent": agent,
+                "label": AGENT_LABELS.get(agent, agent),
+                "trades": n,
+                "win_rate": data["wins"] / n if n else 0.0,
+                "avg_r": data["total_r"] / n if n else 0.0,
+                "symbols": sorted(s for s in data["symbols"] if s),
+            })
+        return {"attribution": rows, "total_closed_trades": len(working)}
+    except Exception:
+        return {"attribution": [], "total_closed_trades": 0}
+
+
 @router.get("/api/agents/last-cycle")
 def get_last_cycle_votes() -> dict:
     state = read_state()

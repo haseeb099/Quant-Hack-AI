@@ -34,7 +34,7 @@ from src.risk.margin_monitor import MarginMonitor
 from src.risk.portfolio_heat import PortfolioHeat
 from src.risk.position_manager import PositionManager
 from src.risk.sharpe_guard import SharpeGuard
-from src.utils.logger import log_trade_decision
+from src.utils.logger import instrument_span, log_trade_decision
 from src.utils.trade_logger import TradeLogger
 from src.web.state_publisher import StatePublisher
 
@@ -179,7 +179,21 @@ class TradingEngine:
         volume: float,
         sl: float | None = None,
         tp: float | None = None,
+        skip_risk_check: bool = False,
     ) -> dict:
+        if not skip_risk_check:
+            from src.risk.pre_trade_gate import TradeCheckRequest, get_pre_trade_gate
+
+            check = get_pre_trade_gate().evaluate_from_engine(
+                self,
+                TradeCheckRequest(symbol=symbol, direction=direction, volume=volume, sl=sl, tp=tp),
+            )
+            if not check.allowed:
+                return {
+                    "status": "blocked",
+                    "message": check.blockers[0].message if check.blockers else "Risk gate blocked trade",
+                    "risk_check": check.to_dict(),
+                }
         result = self.connector.send_trade(symbol, direction, volume, sl=sl, tp=tp)
         self._publish_state()
         return result
@@ -481,6 +495,7 @@ class TradingEngine:
             "cycle_in_progress": self._cycle_in_progress,
             "mt5_connected": mt5_connected,
             "zmq_last_error": zmq_error,
+            "account_profile": self.account_profile.kind if self.account_profile else None,
             "account": {
                 "equity": equity,
                 "balance": account.get("balance", equity),
@@ -536,6 +551,10 @@ class TradingEngine:
 
     def run_cycle(self) -> None:
         """Execute one 15-minute decision cycle across all active symbols."""
+        self._run_cycle_body()
+
+    @instrument_span("quantai.run_cycle")
+    def _run_cycle_body(self) -> None:
         cycle_start = datetime.now(timezone.utc)
         self._cycle_decisions = []
         self._cycle_votes = []

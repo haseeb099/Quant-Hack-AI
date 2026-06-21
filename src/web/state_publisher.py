@@ -128,6 +128,7 @@ class StatePublisher:
             "cycle_in_progress": snapshot.get("cycle_in_progress", state.get("cycle_in_progress", False)),
             "mt5_connected": snapshot.get("mt5_connected", snapshot.get("connected", False)),
             "zmq_last_error": snapshot.get("zmq_last_error", state.get("zmq_last_error")),
+            "account_profile": snapshot.get("account_profile", state.get("account_profile")),
             "account": {**state.get("account", {}), **account},
             "positions": snapshot.get("positions", []),
             "risk": {**state.get("risk", {}), **risk, "sharpe": risk.get("sharpe", 0)},
@@ -140,6 +141,8 @@ class StatePublisher:
         state.update(updates)
         if snapshot.get("instruments"):
             _merge_instruments(state, snapshot["instruments"])
+        if snapshot.get("market"):
+            state["market"] = snapshot["market"]
 
         equity = float(account.get("equity", 1_000_000))
         append_equity_point(state, equity, state["timestamp"])

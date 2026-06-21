@@ -54,7 +54,15 @@ docker build -f Dockerfile.dashboard -t quantai-dashboard .
 
 **Env:**
 - `DASHBOARD_AUTH_TOKEN` — optional Bearer token for ingress protection
+- `DEMO_MODE=true` — force **Demo** badge when running API without engine (cloud dev)
+- `LOGFIRE_TOKEN` — Pydantic Logfire on engine cycles
 - `PORT` — default 8080
+
+Clients with auth enabled:
+
+```bash
+curl -H "Authorization: Bearer $DASHBOARD_AUTH_TOKEN" https://dashboard.your-domain.com/api/status
+```
 
 ## Northflank Setup
 
@@ -76,12 +84,17 @@ docker build -f Dockerfile.dashboard -t quantai-dashboard .
 ## Local Development
 
 ```bash
-# Terminal 1 — engine + API
+# One-shot dashboard (builds frontend, serves API + SPA on :8080)
+./scripts/start_dashboard.sh
+
+# Engine + live state publishing
 python main.py --mode simulate --phase round1 --with-dashboard
 
-# Terminal 2 — frontend dev (proxies /api and /ws)
+# Frontend hot reload (proxies /api and /ws to :8080)
 cd frontend && npm run dev
 ```
+
+The status bar shows **Live**, **Simulate**, or **Demo** based on engine mode and `DEMO_MODE`.
 
 Production: `cd frontend && npm run build` — FastAPI serves `frontend/dist` at `/`.
 
@@ -96,14 +109,12 @@ curl http://localhost:8080/health
 
 ## Notion Sync
 
-Set on the **engine** service (not dashboard):
+Set on the **engine** service (not dashboard). Sync auto-enables when `NOTION_API_KEY` and at least one database ID are set (unless `NOTION_SYNC_ENABLED=false`):
 
 ```
-NOTION_SYNC_ENABLED=true
 NOTION_API_KEY=secret_...
 NOTION_TRADE_JOURNAL_DS_ID=...
 NOTION_AGENT_PERF_DS_ID=...
 NOTION_RISK_EVENTS_DS_ID=...
+LOGFIRE_TOKEN=...
 ```
-
-Trades, agent stats, and risk events sync automatically during live/simulate cycles.
