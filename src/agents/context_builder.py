@@ -55,6 +55,10 @@ class ContextBuilder:
         debate: dict[str, Any] | None = None,
         peer_sentiment: str | None = None,
         peer_sizing_adj: float = 1.0,
+        sentiment_snapshot: dict[str, Any] | None = None,
+        macro_regime: dict[str, Any] | None = None,
+        upcoming_events: list[dict[str, Any]] | None = None,
+        event_gate: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         regime = features.regime.value
         semantic = self.memory.get_semantic_context(regime, features.symbol, session)
@@ -118,6 +122,11 @@ class ContextBuilder:
             "peer_sentiment": peer_sentiment or "mixed",
             "peer_sizing_adj": peer_sizing_adj,
             "regime_analogs": regime_analogs,
+            "sentiment_snapshot": sentiment_snapshot or {},
+            "macro_regime": macro_regime or {},
+            "upcoming_events": upcoming_events or [],
+            "event_gate": event_gate or {},
+            "top_headlines": (sentiment_snapshot or {}).get("top_headlines", []),
         }
 
     def format_for_prompt(self, context: dict[str, Any]) -> str:
@@ -132,6 +141,20 @@ class ContextBuilder:
                 f"Semantic best agent: {context['semantic_best_agent']} "
                 f"(score={context['semantic_best_score']:.2f}, n={context['semantic_sample_count']})"
             )
+        if context.get("sentiment_snapshot"):
+            snap = context["sentiment_snapshot"]
+            if snap.get("headline_count", 0) > 0:
+                lines.append(
+                    f"Sentiment: score={snap.get('score', 0):.2f} "
+                    f"conf={snap.get('confidence', 0):.2f} — {snap.get('summary', '')}"
+                )
+        if context.get("macro_regime"):
+            macro = context["macro_regime"]
+            lines.append(
+                f"Macro: {macro.get('bias', 'neutral')} | USD {macro.get('usd_strength', 'neutral')}"
+            )
+        if context.get("upcoming_events"):
+            lines.append(f"Upcoming events: {len(context['upcoming_events'])}")
         for sig in context.get("agent_signals", []):
             lines.append(f"  {sig['agent']}: {sig['direction']} conf={sig['confidence']:.2f} — {sig['reasoning']}")
         if context.get("working_memory"):

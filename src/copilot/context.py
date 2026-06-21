@@ -13,6 +13,7 @@ from src.agents.base_agent import AgentSignal, FeatureVector
 from src.agents.breakout_hunter import BreakoutHunterAgent
 from src.agents.mean_reversion import MeanReversionAgent
 from src.agents.momentum_pulse import MomentumPulseAgent
+from src.agents.sentiment_agent import SentimentAgent
 from src.agents.trend_surfer import TrendSurferAgent
 from src.copilot.models import DataCitation
 from src.data.feature_engine import FeatureEngine
@@ -89,6 +90,8 @@ class CopilotContextBuilder:
             MomentumPulseAgent(self.config.agent_config("momentum_pulse")),
             MeanReversionAgent(self.config.agent_config("mean_reversion")),
         ]
+        if os.getenv("SENTIMENT_AGENT_ENABLED", "true").lower() not in ("0", "false"):
+            self.agents.append(SentimentAgent(self.config.agent_config("sentiment_agent")))
 
     def build(
         self,
@@ -192,7 +195,10 @@ class CopilotContextBuilder:
         multi_features = self.feature_engine.compute_multi(symbol, ohlcv, donchian)
         primary = multi_features.get("M15") or next(iter(multi_features.values()))
 
-        signals = self._run_agents(multi_features, session_name)
+        intelligence = state.get("intelligence", {})
+        symbol_sentiment = (intelligence.get("sentiment") or {}).get(symbol, {})
+
+        signals = self._run_agents(multi_features, session_name, symbol_sentiment)
         for sig in signals:
             citations.append(DataCitation(
                 source=f"agent.{sig.agent_name}",
@@ -228,6 +234,14 @@ class CopilotContextBuilder:
                 timestamp=now,
             ))
 
+        if symbol_sentiment:
+            citations.append(DataCitation(
+                source="intelligence.sentiment",
+                field=symbol,
+                value=symbol_sentiment,
+                timestamp=str(symbol_sentiment.get("fetched_at", now)),
+            ))
+
         context = {
             "symbol": symbol,
             "data_source": data_source,
@@ -254,6 +268,12 @@ class CopilotContextBuilder:
             },
             "phase": state.get("phase", self.config.current_phase),
             "timestamp": now,
+            "intelligence": {
+                "enabled": intelligence.get("enabled", False),
+                "sentiment": symbol_sentiment,
+                "macro": intelligence.get("macro", {}),
+                "upcoming_events": intelligence.get("upcoming_events", []),
+            },
         }
         return context, citations, None
 
@@ -300,6 +320,7 @@ class CopilotContextBuilder:
         self,
         multi_features: dict[str, FeatureVector],
         session_name: str,
+        symbol_sentiment: dict[str, Any] | None = None,
     ) -> list[AgentSignal]:
         signals: list[AgentSignal] = []
         for agent in self.agents:
@@ -311,7 +332,7 @@ class CopilotContextBuilder:
                 features = multi_features.get(tf) or multi_features.get("M15")
                 if features is None:
                     continue
-                self._inject_extras(features, agent.name, multi_features, session_name)
+                self._inject_extras(features, agent.name, multi_features, session_name, symbol_sentiment)
                 candidate = agent.analyze(features)
                 if best is None or candidate.confidence > best.confidence:
                     best = candidate
@@ -325,7 +346,11 @@ class CopilotContextBuilder:
         agent_name: str,
         multi_features: dict[str, FeatureVector],
         session_name: str,
+        symbol_sentiment: dict[str, Any] | None = None,
     ) -> None:
+        if symbol_sentiment:
+            features.extras["sentiment_snapshot"] = symbol_sentiment
+            features.extras["event_gate"] = {"allowed": True}
         h1 = multi_features.get("H1")
         h4 = multi_features.get("H4")
         if h1:

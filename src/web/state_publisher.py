@@ -143,6 +143,8 @@ class StatePublisher:
             _merge_instruments(state, snapshot["instruments"])
         if snapshot.get("market"):
             state["market"] = snapshot["market"]
+        if snapshot.get("intelligence"):
+            state["intelligence"] = snapshot["intelligence"]
 
         equity = float(account.get("equity", 1_000_000))
         append_equity_point(state, equity, state["timestamp"])

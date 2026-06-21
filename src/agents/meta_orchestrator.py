@@ -161,6 +161,20 @@ class MetaOrchestrator:
                 size_scale *= 0.6
                 reasoning += "; debate conflicts — reduced size"
 
+        if context and context.get("sentiment_snapshot"):
+            snap = context["sentiment_snapshot"]
+            sent_score = float(snap.get("score", 0))
+            if sent_score > 0.4 and direction == Direction.BUY:
+                confidence = min(confidence * 1.05, 1.0)
+                reasoning += "; sentiment confirms BUY"
+            elif sent_score < -0.4 and direction == Direction.SELL:
+                confidence = min(confidence * 1.05, 1.0)
+                reasoning += "; sentiment confirms SELL"
+            elif abs(sent_score) > 0.4 and direction != Direction.HOLD:
+                if (sent_score > 0 and direction == Direction.SELL) or (sent_score < 0 and direction == Direction.BUY):
+                    size_scale *= 0.7
+                    reasoning += "; sentiment conflicts — reduced size"
+
         return OrchestratorDecision(
             symbol=features.symbol,
             direction=direction,
@@ -229,6 +243,26 @@ class MetaOrchestrator:
                 prompt_parts.append(f"Bull/Bear debate: {context['debate_synthesis']}")
             if context.get("peer_sentiment"):
                 prompt_parts.append(f"Peer crowd sentiment: {context['peer_sentiment']}")
+            if context.get("sentiment_snapshot"):
+                snap = context["sentiment_snapshot"]
+                prompt_parts.append(
+                    f"News sentiment: score={snap.get('score', 0):.2f} "
+                    f"({snap.get('summary', '')})"
+                )
+                for headline in (snap.get("top_headlines") or [])[:3]:
+                    prompt_parts.append(f"  Headline: {headline.get('title', '')} [{headline.get('source', '')}]")
+            if context.get("macro_regime"):
+                macro = context["macro_regime"]
+                prompt_parts.append(
+                    f"Macro regime: {macro.get('bias', 'neutral')}, USD {macro.get('usd_strength', 'neutral')}"
+                )
+            if context.get("upcoming_events"):
+                for event in context["upcoming_events"][:3]:
+                    prompt_parts.append(
+                        f"Upcoming event: {event.get('name')} ({event.get('impact')}) at {event.get('scheduled_at')}"
+                    )
+            if context.get("event_gate") and not context["event_gate"].get("allowed", True):
+                prompt_parts.append(f"Event gate: {context['event_gate'].get('reason', 'blocked')}")
 
         agent = Agent(model, output_type=AIDecision, system_prompt="Respond with structured trading decisions only.")
         result = agent.run_sync("\n".join(prompt_parts))
