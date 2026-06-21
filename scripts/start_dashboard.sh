@@ -17,6 +17,7 @@ fi
 mkdir -p data logs
 if [[ ! -f data/runtime_state.json ]]; then
   python3 -c "from src.web.runtime_state import default_state, write_state; write_state(default_state())"
+  echo "Seeded default runtime state"
 fi
 
 PORT="${DASHBOARD_PORT:-8080}"
