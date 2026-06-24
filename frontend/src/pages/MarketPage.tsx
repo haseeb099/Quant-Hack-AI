@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { PageHeader } from "@/components/shared/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -77,12 +78,10 @@ export function MarketPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-xl font-semibold">Market</h1>
-        <p className="text-sm text-muted-foreground">
-          Live prices, sentiment, economic events, and regime across 15 instruments
-        </p>
-      </div>
+      <PageHeader
+        title="Market"
+        description="Live bid/ask, spreads, sentiment, and economic events across 15 instruments."
+      />
 
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="bg-panel border-border/60 lg:col-span-2">
@@ -130,6 +129,16 @@ export function MarketPage() {
               <Skeleton className="h-20" />
             ) : (
               <>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Intelligence</span>
+                  <Badge variant={intel?.refresh_ok !== false ? "signal" : "destructive"}>
+                    {intel?.enabled
+                      ? intel.refresh_ok !== false
+                        ? "Live"
+                        : "Refresh failed"
+                      : "Disabled"}
+                  </Badge>
+                </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Bias</span>
                   <Badge variant="outline">{macro?.bias ?? "neutral"}</Badge>

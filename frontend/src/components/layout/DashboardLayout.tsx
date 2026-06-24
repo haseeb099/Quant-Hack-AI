@@ -21,13 +21,15 @@ export function DashboardLayout() {
 
   return (
     <TooltipProvider>
-      <div className="min-h-screen bg-background">
+      <div className="min-h-screen dashboard-canvas">
         <Sidebar />
-        <div className={cn("pl-56 transition-[padding] duration-200", copilotOpen && "pr-96")}>
+        <div className={cn("pl-56 transition-[padding] duration-200", copilotOpen && "pr-80 xl:pr-96")}>
           <TopStatusBar wsConnected={connected} />
           <ConnectionBanner status={status} wsConnected={connected} marketAlert={lastAlert} />
           <main className="p-6">
-            <Outlet />
+            <div className="page-enter mx-auto max-w-[1600px]">
+              <Outlet />
+            </div>
           </main>
         </div>
         <CopilotPanel

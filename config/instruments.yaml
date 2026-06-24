@@ -1,106 +1,106 @@
-# Competition instruments — 15 symbols
+# Competition instruments — v2 allocation weighted to audit winners
 instruments:
   - symbol: BTC/USD
     category: crypto
     bias: bearish
-    allocation: 0.12
-    primary_agent: breakout_hunter
+    allocation: 0.14
+    primary_agent: trend_surfer
     active: true
 
   - symbol: ETH/USD
     category: crypto
     bias: bearish
     allocation: 0.12
-    primary_agent: breakout_hunter
+    primary_agent: trend_surfer
     active: true
 
   - symbol: SOL/USD
     category: crypto
     bias: bearish
-    allocation: 0.11
-    primary_agent: trend_surfer
+    allocation: 0.08
+    primary_agent: momentum_pulse
     active: true
 
   - symbol: XRP/USD
     category: crypto
     bias: mixed
-    allocation: 0.04
+    allocation: 0.01
     primary_agent: mean_reversion
     active: true
 
   - symbol: BAR/USD
     category: crypto
     bias: mixed
-    allocation: 0.04
+    allocation: 0.01
     primary_agent: mean_reversion
     active: true
 
   - symbol: XAU/USD
     category: metals
     bias: bullish
-    allocation: 0.15
+    allocation: 0.10
     primary_agent: trend_surfer
     active: true
 
   - symbol: XAG/USD
     category: metals
     bias: bullish
-    allocation: 0.10
+    allocation: 0.18
     primary_agent: trend_surfer
     active: true
 
   - symbol: EUR/USD
     category: forex
     bias: range
-    allocation: 0.05
-    primary_agent: mean_reversion
+    allocation: 0.06
+    primary_agent: ml_signal
     active: true
 
   - symbol: GBP/USD
     category: forex
     bias: range
-    allocation: 0.05
+    allocation: 0.04
     primary_agent: mean_reversion
     active: true
 
   - symbol: USD/JPY
     category: forex
     bias: range
-    allocation: 0.04
+    allocation: 0.01
     primary_agent: mean_reversion
     active: true
 
   - symbol: AUD/USD
     category: forex
     bias: range
-    allocation: 0.04
-    primary_agent: mean_reversion
+    allocation: 0.10
+    primary_agent: trend_surfer
     active: true
 
   - symbol: USD/CAD
     category: forex
     bias: range
-    allocation: 0.04
-    primary_agent: mean_reversion
+    allocation: 0.14
+    primary_agent: trend_surfer
     active: true
 
   - symbol: USD/CHF
     category: forex
     bias: range
-    allocation: 0.04
+    allocation: 0.01
     primary_agent: mean_reversion
     active: true
 
   - symbol: EUR/GBP
     category: forex
     bias: range
-    allocation: 0.03
+    allocation: 0.01
     primary_agent: mean_reversion
     active: true
 
   - symbol: EUR/CHF
     category: forex
     bias: range
-    allocation: 0.03
-    primary_agent: mean_reversion
+    allocation: 0.02
+    primary_agent: ml_signal
     active: true

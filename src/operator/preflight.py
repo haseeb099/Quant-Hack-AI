@@ -114,7 +114,7 @@ def check_tick_stream(zmq_only: bool = False) -> dict[str, Any]:
         conn = ZeroMQConnector()
         if not conn.connect():
             return _result("TICK_STREAM", "Tick stream", False, "ZMQ not connected")
-        feed = LiveFeed(conn)
+        feed = LiveFeed(conn, COMPETITION_SYMBOLS)
         feed.start()
         import time
         time.sleep(2)
@@ -175,7 +175,93 @@ def check_zmq_env() -> dict[str, Any]:
     )
 
 
-def run_preflight(zmq_only: bool = False, with_cycle: bool = False) -> dict[str, Any]:
+def check_phase_schedule() -> dict[str, Any]:
+    from src.engine.config import QuantAIConfig, resolve_phase
+
+    config = QuantAIConfig.load(auto_phase=True)
+    resolved = resolve_phase(auto=True)
+    env_phase = os.getenv("QUANTAI_PHASE", "auto")
+    mismatch = env_phase not in ("", "auto") and env_phase != resolved
+    ok = not mismatch and config.current_phase == resolved
+    detail = f"schedule={resolved} engine={config.current_phase} env={env_phase or 'auto'}"
+    return _result(
+        "PHASE_SCHEDULE",
+        "Engine phase vs BST schedule",
+        ok,
+        detail,
+        "Set QUANTAI_PHASE=auto or match current round",
+    )
+
+
+def check_competition_ohlcv() -> dict[str, Any]:
+    from src.bridges.factory import create_live_connector
+
+    conn = create_live_connector()
+    zmq_bars = 0
+    try:
+        df = conn.get_ohlcv("EUR/USD", "M15", 320)
+        zmq_bars = len(df) if df is not None else 0
+    finally:
+        conn.close()
+
+    mt5_bars = 0
+    try:
+        import MetaTrader5 as mt5
+        from src.integrations.mt5_session import ensure_mt5_session
+
+        ok, _ = ensure_mt5_session(require_login=False)
+        if ok:
+            rates = mt5.copy_rates_from_pos("EURUSD", mt5.TIMEFRAME_M15, 0, 320)
+            if rates is None or len(rates) == 0:
+                rates = mt5.copy_rates_from_pos("EURUSD", mt5.TIMEFRAME_M15, 1, 320)
+            mt5_bars = len(rates) if rates is not None else 0
+    except Exception:
+        mt5_bars = 0
+
+    passed = zmq_bars >= 50 or mt5_bars >= 50
+    return _result(
+        "COMPETITION_OHLCV",
+        "OHLCV bar depth (ZMQ or MT5 fallback)",
+        passed,
+        f"zmq={zmq_bars} mt5={mt5_bars} (need >=50 on at least one path)",
+        "Recompile DWX EA; verify EURUSD in MarketWatch",
+    )
+
+
+def check_reconciliation_critical() -> dict[str, Any]:
+    snapshot_path = Path("data/operator_snapshot.json")
+    if not snapshot_path.exists():
+        return _result(
+            "RECONCILIATION",
+            "Reconciliation status",
+            True,
+            "no operator snapshot yet",
+        )
+    try:
+        import json
+
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _result("RECONCILIATION", "Reconciliation status", True, "snapshot unreadable")
+
+    recon = snapshot.get("reconciliation") or {}
+    status = str(recon.get("status", "GREEN")).upper()
+    critical = [
+        i for i in recon.get("issues", [])
+        if not i.get("passed", True) and i.get("severity") == "CRITICAL"
+    ]
+    passed = status != "RED" and len(critical) == 0
+    detail = f"status={status} critical_failures={len(critical)}"
+    return _result(
+        "RECONCILIATION",
+        "Reconciliation status",
+        passed,
+        detail,
+        "Run scripts/repair_trade_journal.py and reconcile positions",
+    )
+
+
+def run_preflight(zmq_only: bool = False, with_cycle: bool = False, deep: bool = False, competition: bool = False) -> dict[str, Any]:
     checks: list[dict[str, Any]] = [
         check_account_profile(),
         check_config_symbols(),
@@ -186,6 +272,17 @@ def run_preflight(zmq_only: bool = False, with_cycle: bool = False) -> dict[str,
         check_frontend_build(),
         check_zmq_env(),
     ]
+    if deep:
+        from src.operator.mt5_checks import run_mt5_checks
+
+        mt5_result = run_mt5_checks(zmq_only=zmq_only, with_cycle=False)
+        checks.extend(mt5_result.get("checks", []))
+    if competition:
+        checks.extend([
+            check_competition_ohlcv(),
+            check_reconciliation_critical(),
+            check_phase_schedule(),
+        ])
     if with_cycle:
         checks.append(check_engine_sim_cycle())
 
@@ -195,4 +292,6 @@ def run_preflight(zmq_only: bool = False, with_cycle: bool = False) -> dict[str,
         "total": len(checks),
         "ready": passed == len(checks),
         "checks": checks,
+        "deep": deep,
+        "competition": competition,
     }

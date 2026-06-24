@@ -2,6 +2,8 @@
 
 Technology prize deliverable per [Notion Doc 13](https://app.notion.com/p/385dd43e0a9d81919c57e63babf0e696). All four sponsor technologies are integrated in production code paths.
 
+**Setup guide:** [sponsor_setup.md](sponsor_setup.md) — redeem credits and validate with `python scripts/setup_sponsor_check.py`.
+
 ## Overview
 
 | Sponsor | Perk | Integration | File |
@@ -47,14 +49,17 @@ export LOGFIRE_TOKEN=your_token
 
 ## Doubleword (Inference Routing)
 
-**Role:** Optional OpenAI-compatible gateway for model routing through Pydantic AI.
+**Role:** Copilot narrative enhancement via Pydantic AI (competition perk via Logfire Gateway).
 
-- **Component:** `MetaOrchestrator._call_claude()` in `src/agents/meta_orchestrator.py`
-- **Routing:** When `DOUBLEWORD_API_KEY` is set, requests route to `https://api.doubleword.ai/v1`
-- **Fallback:** Direct Anthropic API when key is unset
-- **Priority:** Doubleword key takes precedence over Anthropic key for AI calls
+- **Component:** `src/copilot/provider.py` — dashboard Copilot summaries
+- **Gateway (recommended):** `PYDANTIC_AI_GATEWAY_API_KEY` + `COPILOT_GATEWAY_MODEL=gateway/...`
+- **Direct:** `DOUBLEWORD_API_KEY` → `https://api.doubleword.ai/v1`
+- **MetaOrchestrator:** Only uses Doubleword if `DOUBLEWORD_API_KEY` is set on the engine — leave unset to preserve Anthropic for trade decisions
 
 ```bash
+export PYDANTIC_AI_GATEWAY_API_KEY=pylf_v...
+export COPILOT_GATEWAY_MODEL=gateway/openai:gpt-4o-mini
+# or direct:
 export DOUBLEWORD_API_KEY=your_key
 ```
 

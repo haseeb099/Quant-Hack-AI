@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket
@@ -11,12 +13,30 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from src.web.auth import dashboard_auth_token, is_dashboard_authorized
 from src.web.routes import adaptation, agents, competition, control, copilot, demo, instruments, integrations, intelligence, market, memory, notion, operator, positions, risk, status, trades
 from src.web.ws import manager, websocket_endpoint
 
 logger = logging.getLogger(__name__)
 
 FRONTEND_DIST = Path("frontend/dist")
+
+
+def _cors_origins() -> list[str]:
+    raw = os.getenv("DASHBOARD_CORS_ORIGINS", "").strip()
+    if raw:
+        return [origin.strip() for origin in raw.split(",") if origin.strip()]
+    env = os.getenv("QUANTAI_ENV", os.getenv("ENV", "")).lower()
+    if env == "production":
+        return []
+    return ["*"]
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    manager.start_background(asyncio.get_running_loop())
+    logger.info("Dashboard WebSocket broadcaster started on /ws/live")
+    yield
 
 
 def create_app() -> FastAPI | None:
@@ -27,16 +47,22 @@ def create_app() -> FastAPI | None:
         logger.warning("FastAPI not installed — dashboard unavailable")
         return None
 
-    app = FastAPI(title="QuantAI Dashboard", version="2.0.0")
+    app = FastAPI(title="QuantAI Dashboard", version="2.0.0", lifespan=_lifespan)
+    cors_origins = _cors_origins()
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins or ["https://localhost"],
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
-    auth_token = os.getenv("DASHBOARD_AUTH_TOKEN", "").strip()
+    auth_token = dashboard_auth_token()
+    env = os.getenv("QUANTAI_ENV", os.getenv("ENV", "")).lower()
+    if not auth_token and env == "production":
+        logger.warning(
+            "DASHBOARD_AUTH_TOKEN is unset in production — dashboard API routes are unauthenticated"
+        )
     if auth_token:
         from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -44,10 +70,11 @@ def create_app() -> FastAPI | None:
             async def dispatch(self, request, call_next):
                 path = request.url.path
                 if path.startswith("/api"):
-                    header = request.headers.get("Authorization", "")
-                    query = request.query_params.get("token", "")
-                    token = header.removeprefix("Bearer ").strip() if header else query
-                    if token != auth_token and request.headers.get("X-Dashboard-Token") != auth_token:
+                    if not is_dashboard_authorized(
+                        authorization=request.headers.get("Authorization", ""),
+                        query_token=request.query_params.get("token", ""),
+                        header_token=request.headers.get("X-Dashboard-Token", ""),
+                    ):
                         return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
                 return await call_next(request)
 
@@ -78,13 +105,6 @@ def create_app() -> FastAPI | None:
     @app.get("/health")
     def health():
         return {"status": "ok"}
-
-    @app.on_event("startup")
-    async def startup() -> None:
-        import asyncio
-
-        manager.start_background(asyncio.get_running_loop())
-        logger.info("Dashboard WebSocket broadcaster started on /ws/live")
 
     if FRONTEND_DIST.exists() and os.getenv("DASHBOARD_SERVE_SPA", "true").lower() == "true":
         assets_dir = FRONTEND_DIST / "assets"
@@ -122,12 +142,10 @@ def run_dashboard(host: str = "0.0.0.0", port: int = 8080) -> None:
     except ImportError:
         pass
 
-    from src.utils.logger import setup_logging
+    from src.utils.logger import is_logfire_active, setup_logging
 
-    setup_logging(
-        level=os.getenv("LOG_LEVEL", "INFO"),
-        enable_logfire=os.getenv("DASHBOARD_NO_LOGFIRE", "").lower() not in ("1", "true"),
-    )
+    if not is_logfire_active() and os.getenv("DASHBOARD_NO_LOGFIRE", "").lower() not in ("1", "true"):
+        setup_logging(level=os.getenv("LOG_LEVEL", "INFO"), enable_logfire=True)
 
     app = create_app()
     if app is None:

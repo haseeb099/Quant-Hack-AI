@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from src.operator.formatting import format_launch_summary
 from src.operator.preflight import run_preflight
 from src.operator.verification_store import read_verification_state
 from src.web.between_round import is_scheduled_adaptation_window
@@ -41,6 +42,7 @@ _RUNBOOK_PHASES: list[dict[str, Any]] = [
         "title": "During round (24h)",
         "steps": [
             {"id": "monitor", "label": "Dashboard + Logfire monitoring", "check": "logfire"},
+            {"id": "watchdog", "label": "Operator watchdog snapshot GREEN", "check": "watchdog_snapshot"},
             {"id": "risk", "label": "Drawdown tier normal/warning", "check": "drawdown_ok"},
             {"id": "discipline", "label": "Risk discipline ≥80", "check": "discipline_ok"},
             {"id": "copilot", "label": "Copilot grounded analysis available", "check": "copilot"},
@@ -62,6 +64,13 @@ _RUNBOOK_PHASES: list[dict[str, Any]] = [
 def _verification_map() -> dict[str, dict[str, Any]]:
     cached = read_verification_state()
     return {c["code"]: c for c in cached.get("checks", [])}
+
+
+_RUNBOOK_REMEDIATION: dict[str, str] = {
+    "dashboard_auth": "Set DASHBOARD_AUTH_TOKEN (backend) and VITE_DASHBOARD_AUTH_TOKEN (frontend build) for Northflank",
+    "logfire": "export LOGFIRE_TOKEN=… and restart dashboard/engine to activate tracing",
+    "watchdog_snapshot": "Run python scripts/operator_watchdog.py --once or POST /api/operator/watchdog/trigger",
+}
 
 
 def _step_status(check: str, state: dict[str, Any], preflight: dict[str, Any], launch: dict[str, Any]) -> tuple[str, str]:
@@ -127,7 +136,7 @@ def _step_status(check: str, state: dict[str, Any], preflight: dict[str, Any], l
 
     if check == "launch_ready":
         ok = launch.get("ready", False)
-        return ("pass" if ok else "warn"), f"{launch.get('summary', {})}"
+        return ("pass" if ok else "warn"), format_launch_summary(launch.get("summary"))
 
     if check == "logfire":
         import os
@@ -137,6 +146,24 @@ def _step_status(check: str, state: dict[str, Any], preflight: dict[str, Any], l
         if os.getenv("LOGFIRE_TOKEN"):
             return "warn", "Token set — restart to activate"
         return "warn", "LOGFIRE_TOKEN not set"
+
+    if check == "watchdog_snapshot":
+        from src.operator.snapshot_store import read_snapshot
+
+        snapshot = read_snapshot()
+        if not snapshot:
+            return "warn", "No snapshot yet — start scripts/operator_watchdog.py"
+        status = str(snapshot.get("status", "UNKNOWN"))
+        summary = snapshot.get("summary", {})
+        detail = (
+            f"status={status} mt5={summary.get('mt5_position_count')} "
+            f"engine={summary.get('engine_position_count')}"
+        )
+        if status == "RED":
+            return "fail", detail
+        if status == "YELLOW":
+            return "warn", detail
+        return "pass", detail
 
     if check == "drawdown_ok":
         tier = str(state.get("risk", {}).get("dd_tier", "normal"))
@@ -177,10 +204,12 @@ def build_operator_runbook(state: dict[str, Any] | None = None) -> dict[str, Any
         steps_out = []
         for step in phase["steps"]:
             status, detail = _step_status(step["check"], state, preflight, launch)
+            remediation = None if status == "pass" else _RUNBOOK_REMEDIATION.get(step["check"])
             steps_out.append({
                 **step,
                 "status": status,
                 "detail": detail,
+                "remediation": remediation,
             })
         passed = sum(1 for s in steps_out if s["status"] == "pass")
         phases.append({

@@ -4,6 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath, URL } from "node:url";
 
 export default defineConfig({
+  envDir: fileURLToPath(new URL("..", import.meta.url)),
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
@@ -24,5 +25,14 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ["react", "react-dom", "react-router-dom"],
+          query: ["@tanstack/react-query"],
+          charts: ["recharts"],
+        },
+      },
+    },
   },
 });

@@ -14,6 +14,11 @@ class SessionInfo:
     preferred_agents: tuple[str, ...]
 
 
+# Competition crypto — trade 24/7 including UTC "closed" hours (21–23).
+_CRYPTO_SYMBOLS: frozenset[str] = frozenset({
+    "BAR/USD", "BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD",
+})
+
 _DEFAULT_SESSIONS: dict[str, dict[str, Any]] = {
     "asia": {
         "start_hour": 0,
@@ -45,8 +50,13 @@ _DEFAULT_SESSIONS: dict[str, dict[str, Any]] = {
 class SessionFilter:
     """Gate symbols and agents by UTC session windows."""
 
-    def __init__(self, sessions: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        sessions: dict[str, Any] | None = None,
+        symbol_filter_enabled: bool = True,
+    ) -> None:
         self.sessions = sessions or _DEFAULT_SESSIONS
+        self.symbol_filter_enabled = symbol_filter_enabled
 
     def _hour(self, ts: datetime | None = None) -> int:
         when = ts or datetime.now(timezone.utc)
@@ -90,7 +100,11 @@ class SessionFilter:
         return symbol in preferred
 
     def should_skip_symbol(self, symbol: str, ts: datetime | None = None) -> bool:
+        if not self.symbol_filter_enabled:
+            return False
         if self.is_overlap(ts):
+            return False
+        if symbol in _CRYPTO_SYMBOLS:
             return False
         return not self.is_symbol_preferred(symbol, ts)
 

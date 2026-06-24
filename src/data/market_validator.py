@@ -18,7 +18,7 @@ class MarketValidator:
 
     def __init__(
         self,
-        max_tick_age_ms: float = 5000,
+        max_tick_age_ms: float = 10000,
         max_price_deviation_atr: float = 2.5,
         max_bar_age_sec: float = 1200,
     ) -> None:
@@ -37,12 +37,13 @@ class MarketValidator:
         bar_close: float,
         atr_14: float,
         tick_age_ms: float,
+        require_tick: bool = False,
     ) -> MarketHealthStatus:
         if tick_mid is None:
             return MarketHealthStatus(
-                health="amber",
+                health="red" if require_tick else "amber",
                 message=f"No live tick for {symbol}",
-                block_entries=False,
+                block_entries=require_tick,
             )
 
         if tick_age_ms > self.max_tick_age_ms:

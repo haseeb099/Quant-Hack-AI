@@ -11,7 +11,7 @@ export function LiveIndicator({ connected, label = "Live" }: LiveIndicatorProps)
       <span
         className={cn(
           "size-2 rounded-full",
-          connected ? "bg-primary animate-pulse-live" : "bg-destructive",
+          connected ? "bg-primary live-pulse" : "bg-destructive",
         )}
         aria-hidden
       />

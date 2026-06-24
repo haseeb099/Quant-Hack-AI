@@ -48,7 +48,7 @@ def test_status(client):
 def test_account(client):
     r = client.get("/api/account")
     assert r.status_code == 200
-    assert r.json()["equity"] == 1_000_000
+    assert r.json()["equity"] is None
 
 
 def test_positions(client):
@@ -74,7 +74,7 @@ def test_trades_detail(client):
 def test_agents(client):
     r = client.get("/api/agents")
     assert r.status_code == 200
-    assert len(r.json()["agents"]) == 4
+    assert len(r.json()["agents"]) == 6
 
 
 def test_risk(client):

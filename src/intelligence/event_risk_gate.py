@@ -21,6 +21,8 @@ class EventRiskGate:
         cal_cfg = config.get("calendar", {})
         self.tier_2_size_mult = float(cal_cfg.get("tier_2_size_multiplier", 0.5))
         self.tier_2_min_conf = float(cal_cfg.get("tier_2_min_confidence", 0.80))
+        self.tier_1_post_window = int(cal_cfg.get("tier_1_post_window_minutes", 5))
+        self.tier_2_post_window = int(cal_cfg.get("tier_2_post_window_minutes", 3))
         self.enabled = config.get("enabled", True)
 
     def evaluate(self, symbol: str, now: datetime | None = None) -> EventGateResult:
@@ -34,33 +36,63 @@ class EventRiskGate:
 
         for event in events:
             event_time = _parse_dt(event.scheduled_at)
-            delta_min = abs((event_time - now).total_seconds()) / 60.0
+            minutes_until = (event_time - now).total_seconds() / 60.0
             tier = event.tier
             window = self.calendar.tier_windows.get(tier, 0)
 
-            if tier == 1 and delta_min <= window:
-                logger.info(
-                    "Event gate BLOCK %s: %s in %.0f min",
-                    symbol, event.name, delta_min,
-                )
-                return EventGateResult(
-                    allowed=False,
-                    size_multiplier=0.0,
-                    reason=f"Tier-1 event {event.name} within {window}min window",
-                    blocking_event=event,
-                )
+            if tier == 1:
+                if 0 < minutes_until <= window:
+                    logger.info(
+                        "Event gate BLOCK %s: %s in %.0f min",
+                        symbol, event.name, minutes_until,
+                    )
+                    return EventGateResult(
+                        allowed=False,
+                        size_multiplier=0.0,
+                        reason=f"Tier-1 event {event.name} within {window}min window",
+                        blocking_event=event,
+                    )
+                if -self.tier_1_post_window <= minutes_until <= 0:
+                    logger.info(
+                        "Event gate BLOCK %s: %s released %.0f min ago",
+                        symbol, event.name, abs(minutes_until),
+                    )
+                    return EventGateResult(
+                        allowed=False,
+                        size_multiplier=0.0,
+                        reason=(
+                            f"Tier-1 event {event.name} just released "
+                            f"({abs(minutes_until):.0f}m ago)"
+                        ),
+                        blocking_event=event,
+                    )
+                continue
 
-            if tier == 2 and delta_min <= window:
-                logger.info(
-                    "Event gate REDUCE %s: %s in %.0f min",
-                    symbol, event.name, delta_min,
-                )
-                return EventGateResult(
-                    allowed=True,
-                    size_multiplier=self.tier_2_size_mult,
-                    min_confidence_override=self.tier_2_min_conf,
-                    reason=f"Tier-2 event {event.name} — size reduced",
-                    blocking_event=event,
-                )
+            if tier == 2:
+                if 0 < minutes_until <= window:
+                    logger.info(
+                        "Event gate REDUCE %s: %s in %.0f min",
+                        symbol, event.name, minutes_until,
+                    )
+                    return EventGateResult(
+                        allowed=True,
+                        size_multiplier=self.tier_2_size_mult,
+                        min_confidence_override=self.tier_2_min_conf,
+                        reason=f"Tier-2 event {event.name} — size reduced",
+                        blocking_event=event,
+                    )
+                if -self.tier_2_post_window <= minutes_until <= 0:
+                    logger.info(
+                        "Event gate REDUCE %s: %s released %.0f min ago",
+                        symbol, event.name, abs(minutes_until),
+                    )
+                    return EventGateResult(
+                        allowed=True,
+                        size_multiplier=self.tier_2_size_mult,
+                        min_confidence_override=self.tier_2_min_conf,
+                        reason=f"Tier-2 event {event.name} just released — size reduced",
+                        blocking_event=event,
+                    )
+                continue
 
         return EventGateResult(allowed=True, reason="Outside event windows")

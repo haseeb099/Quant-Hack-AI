@@ -29,7 +29,11 @@ def setup_logging(level: str = "INFO", enable_logfire: bool = True) -> None:
             import logfire
 
             logfire.configure()
-            logfire.install_auto_tracing(modules=["src"], min_duration=0.01)
+            logfire.install_auto_tracing(
+                modules=["src"],
+                min_duration=0.01,
+                check_imported_modules="warn",
+            )
             _logfire_configured = True
             logging.getLogger(__name__).info("Logfire observability enabled")
         except ImportError:
@@ -81,6 +85,8 @@ def log_trade_decision(logger: logging.Logger, decision: Any, features: Any) -> 
                 confidence=getattr(decision, "confidence", 0),
                 regime=str(getattr(getattr(features, "regime", None), "value", "?")),
                 used_ai=getattr(decision, "used_ai", False),
+                skip_reason=getattr(decision, "skip_reason", None),
+                status=getattr(decision, "status", None),
             )
         except Exception:
             pass

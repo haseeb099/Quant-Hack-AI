@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import math
 
+from src.risk.account_profile import position_notional
 
-def position_notional(volume: float, entry: float, contract_size: float) -> float:
-    """Notional value of a position in account currency."""
-    return abs(volume) * contract_size * entry
+__all__ = ["position_notional", "pnl_pct", "risk_to_lots"]
 
 
 def pnl_pct(profit: float, volume: float, entry: float, contract_size: float) -> float:
     """Position PnL as fraction of notional exposure."""
-    notional = position_notional(volume, entry, contract_size)
+    notional = position_notional(volume, contract_size, entry)
     return profit / max(notional, 1e-9)
 
 

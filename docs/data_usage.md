@@ -10,8 +10,27 @@ How QuantAI uses the competition's ~20 GB historical dataset and live MT5 feeds.
 | MT5 live feed (ZeroMQ) | Competition hours only (22:00–22:00 BST) | Real-time bars, ticks, execution |
 | Anthropic API | During live cycles | Orchestrator reasoning (no market data) |
 | Pydantic Logfire | Continuous when enabled | Internal traces and metrics |
+| Intelligence layer (optional) | During live cycles when enabled | News, calendar, Fear & Greed for **context and gating only** — not pricing |
 
-**No external market data providers** (Yahoo Finance, CoinGecko, etc.) are used. All pricing comes from the competition MT5 platform.
+**Pricing and execution** use the competition MT5 platform only. No external market data providers (Yahoo Finance, CoinGecko, etc.) feed prices, bars, or order fills.
+
+### Gate A — external context policy
+
+Competition rules distinguish **pricing** from **context**:
+
+| Category | Allowed sources | Used for |
+|----------|-----------------|----------|
+| **Pricing** | MT5 live feed (ZeroMQ) only | Bars, ticks, mid prices, SL/TP, execution |
+| **Context / gating** | News, economic calendar, Crypto Fear & Greed (when enabled) | Sentiment scoring, event-risk gates, macro overlay sizing — **never** as a price feed |
+
+When `INTELLIGENCE_ENABLED=true` (default), the intelligence layer may fetch headlines, calendar events, and Fear & Greed indices. These adjust agent confidence, block entries around high-impact events, and apply macro sizing adjustments. They do **not** replace or override MT5 quotes.
+
+**Before each round**, confirm with competition rules that external context feeds are permitted:
+
+- **If allowed:** keep `INTELLIGENCE_ENABLED=true`, configure `NEWS_API_*` / `CALENDAR_SOURCE` as needed, set `FEAR_GREED_ENABLED=true`.
+- **If forbidden:** set `INTELLIGENCE_ENABLED=false` and `SENTIMENT_AGENT_ENABLED=false` in `.env` before the round starts. The engine continues on MT5 pricing alone.
+
+See `src/intelligence/market_intelligence.py` and `src/integrations/notion_az_content.py` for the operator-facing summary.
 
 ---
 
@@ -30,10 +49,32 @@ Provided by the competition for all 15 instruments. Used exclusively for offline
 ### Pipeline
 
 ```
+Pricer ticks → scripts/ingest_pricer_output.py → M15 OHLCV (data/historical/)
 Raw CSV/JSON → scripts/ingest_historical.py → Parquet (data/historical/)
                                             → scripts/build_regime_library.py → Regime labels
+                                            → scripts/run_historical_backtest.py → Trade memory
+                                            → scripts/train_signal_model.py → ML signal model
                                             → scripts/adapt_round.py → Weight updates (±10% cap)
 ```
+
+Full orchestration: `python scripts/run_learning_pipeline.py`
+
+### Pricer tick ingestion
+
+The pricer output folder (`pricer-output-2026-05-11_2026-06-10` by default) contains per-day tick parquet files named `{SYMBOL}_{YYYY}_{MM}_{DD}.parquet` (e.g. `EURUSD_2026_05_11.parquet`).
+
+```bash
+python scripts/ingest_pricer_output.py
+# or
+python scripts/ingest_pricer_output.py --input pricer-output-2026-05-11_2026-06-10 --output data/historical
+```
+
+- Parses `time`/`received` as UTC; mid price = (bid + ask) / 2
+- Resamples to M15 OHLCV; volume = tick count per bar
+- Maps compact symbols to file stems (`EURUSD` → `EUR_USD.parquet`)
+- Filters to 10 competition symbols present in pricer data (no crypto)
+- Check coverage: `python scripts/check_adapt_readiness.py`
+
 
 ### Storage
 

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from src.operator.formatting import format_launch_summary
 from src.operator.preflight import run_preflight
 from src.operator.verification_store import read_verification_state, record_verification
 from src.web.between_round import is_scheduled_adaptation_window
@@ -119,15 +120,18 @@ def _check_copilot() -> dict[str, Any]:
             use_llm=False,
         )
         ok = result.verdict in ("ALLOW", "WAIT", "BLOCK", "REFUSE")
+        detail = f"verdict={result.verdict}"
+        if result.verdict == "REFUSE":
+            detail = "verdict=REFUSE — correctly refused to analyze without live context (safe)"
         return _check(
             "COPILOT",
-            "Copilot grounded analysis",
+            "Copilot grounded analysis (no hallucination)",
             ok,
-            f"verdict={result.verdict}",
+            detail,
             "Check copilot context and runtime state" if not ok else "",
         )
     except Exception as exc:
-        return _check("COPILOT", "Copilot grounded analysis", False, str(exc))
+        return _check("COPILOT", "Copilot grounded analysis (no hallucination)", False, str(exc))
 
 
 def _check_learning_pipeline() -> dict[str, Any]:
@@ -143,6 +147,28 @@ def _check_learning_pipeline() -> dict[str, Any]:
     )
 
 
+def _check_agent_health() -> dict[str, Any]:
+    try:
+        from src.operator.agent_health import load_agent_health, run_agent_health
+
+        report = load_agent_health() or run_agent_health(persist=True)
+        status = report.get("status", "YELLOW")
+        passed = status != "RED"
+        red = report.get("red_agents") or []
+        detail = f"status={status}"
+        if red:
+            detail += f" red={','.join(red)}"
+        return _check(
+            "AGENT_HEALTH",
+            "Agent health suite (6 agents × 15 symbols)",
+            passed,
+            detail,
+            "Run src/operator/agent_health.py; fix RED agents before competition" if not passed else "",
+        )
+    except Exception as exc:
+        return _check("AGENT_HEALTH", "Agent health suite (6 agents × 15 symbols)", False, str(exc))
+
+
 def run_verification(*, quick: bool = True, persist: bool = True) -> dict[str, Any]:
     """Run automated competition-day verification suite."""
     state = read_state()
@@ -151,6 +177,7 @@ def run_verification(*, quick: bool = True, persist: bool = True) -> dict[str, A
         _run_pytest(quick=quick),
         _check_copilot(),
         _check_learning_pipeline(),
+        _check_agent_health(),
     ]
 
     preflight = run_preflight(zmq_only=True)
@@ -167,7 +194,7 @@ def run_verification(*, quick: bool = True, persist: bool = True) -> dict[str, A
         "LAUNCH_READINESS",
         "Launch readiness",
         launch.get("ready", False),
-        str(launch.get("summary", {})),
+        format_launch_summary(launch.get("summary")),
         "Resolve launch readiness failures on Overview",
     ))
 

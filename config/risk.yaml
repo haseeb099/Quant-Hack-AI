@@ -5,7 +5,7 @@ risk:
     normal_max: 0.05
     elevated_max: 0.10
     warning_max: 0.12
-    critical_max: 0.12  # 12–15% band before emergency close
+    critical_max: 0.14   # 12–14% → critical tier (before emergency)
     emergency_close: 0.15
     daily_loss_limit: 0.05
     size_multipliers:
@@ -22,6 +22,11 @@ risk:
     action_pct: 0.80
     emergency_pct: 0.88
     competition_penalty_pct: 0.90
+    stop_out_level_pct: 30        # Competition red-line — forced liquidation
+    stop_out_warn_pct: 50           # Internal warning — block new entries
+    stop_out_emergency_pct: 40      # Internal emergency — reduce exposure
+    poll_interval_sec: 1
+    stale_data_sec: 10
 
   # Leverage caps
   leverage:
@@ -29,6 +34,7 @@ risk:
     max: 20
     hard_stop: 25
     competition_penalty: 28
+    competition_penalty_severe: 29
 
   # Concentration limits
   concentration:
@@ -36,15 +42,43 @@ risk:
     max_pct: 0.40
     hard_stop_pct: 0.50
     competition_penalty_pct: 0.90
+    metals_cluster_max_pct: 0.50
+    metals_single_max_pct: 0.25
+    chf_cluster_max_pct: 0.35
+
+  # Net directional exposure (competition discipline rule)
+  net_directional:
+    internal_cap: 0.85
+    competition_penalty_pct: 0.95
+    enforce_min_gross_pct: 0.08   # only block when gross exposure >= 8% of equity
 
   # Position sizing
   sizing:
     kelly_fraction: 0.5  # Half-Kelly
     max_risk_per_trade: 0.02
     correlation_threshold: 0.70
+    max_spread_atr_ratio: 0.15
+    spread_buffer_mult: 1.0
+    use_executable_prices: true
+
+  # Forex pair correlations for portfolio heat (absolute)
+  correlation_pairs:
+    - [EUR/USD, GBP/USD, 0.85]
+    - [EUR/USD, AUD/USD, 0.72]
+    - [GBP/USD, AUD/USD, 0.68]
+    - [USD/JPY, USD/CHF, 0.78]
+    - [EUR/USD, USD/CHF, -0.75]
+    - [AUD/USD, NZD/USD, 0.88]
+    - [EUR/CHF, USD/CHF, 0.88]
+    - [EUR/CHF, EUR/USD, 0.72]
 
   # Competition compliance
   compliance:
     api_rate_limit_per_sec: 100
     safe_harbor_rate: 500
     single_account: true
+
+  # Micro account overrides (equity < $100) — competition constitution unchanged
+  micro:
+    max_risk_per_trade: 0.005
+    max_position_notional_pct: 0.25

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.web.engine_registry import control_state, get_connector, get_engine
 from src.web.runtime_state import append_risk_event, read_state, write_state
@@ -15,6 +18,80 @@ from src.risk.pre_trade_gate import TradeCheckRequest, get_pre_trade_gate
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["control"])
+
+FILTERS_PATH = Path("data/live_competition_filters.json")
+ALLOWED_FILTER_KEYS = frozenset({
+    "blocked_symbols",
+    "max_new_entries_per_cycle",
+    "min_confidence",
+    "prefer_symbols",
+    "max_fx_shorts_per_cycle",
+    "max_chf_entries_per_cycle",
+    "min_consensus_agents",
+    "fx_min_consensus_agents",
+    "crypto_min_consensus_agents",
+    "buy_min_confidence_fx",
+    "buy_min_confidence_metals",
+    "block_long_rsi_above",
+    "block_short_rsi_below",
+    "bullish_bias_short_min_confidence",
+    "bearish_bias_long_min_confidence",
+    "macro_metal_short_min_confidence",
+    "metals_mr_short_requires_trend_confirm",
+    "trending_min_consensus_agents",
+    "trending_min_confidence",
+    "min_trend_surfer_for_overbought_long",
+    "min_trend_surfer_for_oversold_short",
+    "require_technical_agent",
+    "technical_agents",
+    "block_agent_in_regime",
+    "block_ml_disagreement_on_crypto",
+    "time_stop_bars",
+    "time_stop_m15_bars",
+    "time_stop_min_r",
+    "enable_trailing",
+    "a_plus_bypass",
+    "crypto_min_lot_bump",
+    "round_objective",
+    "notes",
+    "source",
+})
+
+
+class CompetitionFiltersBody(BaseModel):
+    blocked_symbols: list[str] = Field(default_factory=list)
+    max_new_entries_per_cycle: int = Field(ge=1, le=20)
+    min_confidence: float = Field(ge=0.0, le=1.0)
+    prefer_symbols: list[str] = Field(default_factory=list)
+    max_fx_shorts_per_cycle: int | None = Field(default=None, ge=0, le=10)
+    max_chf_entries_per_cycle: int | None = Field(default=None, ge=0, le=10)
+    min_consensus_agents: int | None = Field(default=None, ge=1, le=6)
+    fx_min_consensus_agents: int | None = Field(default=None, ge=1, le=6)
+    crypto_min_consensus_agents: int | None = Field(default=None, ge=1, le=6)
+    buy_min_confidence_fx: float | None = Field(default=None, ge=0.0, le=1.0)
+    buy_min_confidence_metals: float | None = Field(default=None, ge=0.0, le=1.0)
+    block_long_rsi_above: float | None = Field(default=None, ge=0.0, le=100.0)
+    bullish_bias_short_min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    macro_metal_short_min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    metals_mr_short_requires_trend_confirm: bool | None = None
+    trending_min_consensus_agents: int | None = Field(default=None, ge=1, le=6)
+    trending_min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    time_stop_m15_bars: int | None = Field(default=None, ge=1, le=48)
+    block_agent_in_regime: dict[str, list[str]] | None = None
+    round_objective: str | None = None
+    notes: str | None = None
+    source: str | None = None
+
+    @field_validator("blocked_symbols", "prefer_symbols")
+    @classmethod
+    def validate_symbols(cls, values: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for sym in values:
+            sym = sym.strip().upper().replace("_", "/")
+            if "/" not in sym and len(sym) == 6:
+                sym = f"{sym[:3]}/{sym[3:]}"
+            cleaned.append(sym)
+        return cleaned
 
 
 class ModifyPositionBody(BaseModel):
@@ -56,6 +133,48 @@ def _result_response(result: dict[str, Any], action: str) -> dict[str, Any]:
         "message": result.get("message", ""),
         "result": result,
     }
+
+
+@router.get("/api/competition/filters")
+def get_competition_filters() -> dict[str, Any]:
+    if not FILTERS_PATH.exists():
+        return {"filters": {}, "path": str(FILTERS_PATH)}
+    with open(FILTERS_PATH, encoding="utf-8") as handle:
+        data = json.load(handle)
+    return {"filters": data, "path": str(FILTERS_PATH)}
+
+
+@router.post("/api/competition/filters")
+def update_competition_filters(body: CompetitionFiltersBody) -> dict[str, Any]:
+    existing: dict[str, Any] = {}
+    if FILTERS_PATH.exists():
+        with open(FILTERS_PATH, encoding="utf-8") as handle:
+            raw = json.load(handle)
+            if isinstance(raw, dict):
+                existing = raw
+
+    payload = body.model_dump(exclude_none=True)
+    for key in payload:
+        if key not in ALLOWED_FILTER_KEYS:
+            raise HTTPException(status_code=400, detail=f"Disallowed filter key: {key}")
+
+    merged = {**existing, **payload}
+    merged["updated_at"] = datetime.now(timezone.utc).isoformat()
+    FILTERS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(FILTERS_PATH, "w", encoding="utf-8") as handle:
+        json.dump(merged, handle, indent=2)
+        handle.write("\n")
+
+    _log_operator_action("COMPETITION_FILTERS", "Operator updated live competition filters")
+    return {"ok": True, "filters": merged}
+
+
+@router.get("/api/engine/open_trades")
+def get_engine_open_trades() -> dict[str, Any]:
+    engine = get_engine()
+    if engine is None:
+        return {"count": 0, "tickets": [], "trades": {}}
+    return engine.get_open_trades()
 
 
 @router.get("/api/control/state")
@@ -165,7 +284,13 @@ def manual_trade(body: ManualTradeBody) -> dict[str, Any]:
     if engine is not None:
         check = gate.evaluate_from_engine(engine, request)
     else:
-        check = gate.evaluate_from_state(read_state(), request)
+        state = read_state()
+        if state.get("mode") == "live":
+            raise HTTPException(
+                status_code=503,
+                detail="Trading engine not attached — start with python main.py --with-dashboard",
+            )
+        check = gate.evaluate_from_state(state, request)
 
     if not check.allowed:
         detail = {

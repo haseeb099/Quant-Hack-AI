@@ -82,9 +82,19 @@ class PeerMonitor:
             return 0.9  # protect gains when crowd retreats
         return 1.0
 
+    def catch_up_multiplier(self, dd_tier: str = "normal") -> float:
+        """Boost sizing when trailing peers during return rounds."""
+        if dd_tier != "normal":
+            return 1.0
+        if self.round_id not in ("round1", "round2"):
+            return 1.0
+        if self.state.relative_performance < -0.03:
+            return 1.15
+        return 1.0
+
     def should_increase_aggression(self) -> bool:
         return (
             self.state.crowd_sentiment == "risk_on"
             and self.state.relative_performance < -0.02
-            and self.round_id == "round1"
+            and self.round_id in ("round1", "round2")
         )

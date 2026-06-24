@@ -82,7 +82,8 @@ class CopilotContextBuilder:
     def __init__(self, config: QuantAIConfig | None = None) -> None:
         self.config = config or QuantAIConfig.load()
         self.feature_engine = FeatureEngine()
-        self.session_filter = SessionFilter()
+        phases_cfg = load_yaml("phases.yaml")
+        self.session_filter = SessionFilter(phases_cfg.get("sessions", {}))
         self.memory = LayeredMemory()
         self.agents = [
             TrendSurferAgent(self.config.agent_config("trend_surfer")),
@@ -123,7 +124,7 @@ class CopilotContextBuilder:
         citations.append(DataCitation(
             source="runtime_state.account",
             field="equity",
-            value=float(account.get("equity", 0)),
+            value=float(account.get("equity") or 0),
             timestamp=str(state.get("timestamp", now)),
         ))
         citations.append(DataCitation(

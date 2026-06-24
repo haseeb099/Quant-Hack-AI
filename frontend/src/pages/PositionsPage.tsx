@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { PageHeader } from "@/components/shared/PageHeader";
 import { MetricCard } from "@/components/shared/MetricCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,7 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { api, queryKeys, type Position } from "@/lib/api";
+import { api, queryKeys, positionNotional, type Position } from "@/lib/api";
 import {
   formatCurrency,
   formatTimestamp,
@@ -72,7 +73,10 @@ export function PositionsPage() {
     positions.reduce((sum, p) => sum + p.unrealized_pnl, 0);
   const totalExposure =
     data?.total_exposure ??
-    positions.reduce((sum, p) => sum + Math.abs(p.size * p.entry), 0);
+    positions.reduce(
+      (sum, p) => sum + (p.notional ?? positionNotional(p)),
+      0,
+    );
 
   function openModify(pos: Position) {
     setModifyTarget(pos);
@@ -104,12 +108,10 @@ export function PositionsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-xl font-semibold">Positions</h1>
-        <p className="text-sm text-muted-foreground">
-          Live open positions — close or modify SL/TP from the terminal
-        </p>
-      </div>
+      <PageHeader
+        title="Positions"
+        description="Open positions with contract-aware notional exposure. Close or modify SL/TP from the terminal."
+      />
 
       {error && (
         <p className="text-sm text-destructive" role="alert">
@@ -130,6 +132,7 @@ export function PositionsPage() {
         />
         <MetricCard
           title="Unrealized P&L"
+          accent={totalPnl > 0 ? "positive" : totalPnl < 0 ? "negative" : "default"}
           loading={isLoading}
           value={formatCurrency(totalPnl)}
           valueClassName={pnlColorClass(totalPnl)}
@@ -155,6 +158,7 @@ export function PositionsPage() {
                   <TableHead>Direction</TableHead>
                   <TableHead>Size</TableHead>
                   <TableHead>Entry</TableHead>
+                  <TableHead>Notional</TableHead>
                   <TableHead>SL</TableHead>
                   <TableHead>TP</TableHead>
                   <TableHead>P&amp;L</TableHead>
@@ -177,6 +181,7 @@ export function PositionsPage() {
                     </TableCell>
                     <TableCell>{pos.size}</TableCell>
                     <TableCell>{pos.entry}</TableCell>
+                    <TableCell>{formatCurrency(pos.notional ?? positionNotional(pos), true)}</TableCell>
                     <TableCell>{pos.sl ?? "—"}</TableCell>
                     <TableCell>{pos.tp ?? "—"}</TableCell>
                     <TableCell className={pnlColorClass(pos.unrealized_pnl)}>

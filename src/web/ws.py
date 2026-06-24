@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
+
+from src.web.auth import WS_AUTH_PROTOCOL, dashboard_auth_token, is_dashboard_authorized
 
 from src.web.runtime_state import read_state
 from src.web.state_publisher import (
@@ -35,7 +36,6 @@ class ConnectionManager:
         self._alert_listener_registered = False
 
     async def connect(self, websocket: WebSocket) -> None:
-        await websocket.accept()
         self._connections.append(websocket)
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
@@ -118,15 +118,20 @@ manager = ConnectionManager()
 
 
 async def websocket_endpoint(websocket: WebSocket) -> None:
-    auth_token = os.getenv("DASHBOARD_AUTH_TOKEN", "").strip()
-    if auth_token:
-        header = websocket.headers.get("Authorization", "")
-        token = header.removeprefix("Bearer ").strip()
-        query = websocket.query_params.get("token", "")
-        if token != auth_token and query != auth_token and websocket.headers.get("X-Dashboard-Token") != auth_token:
-            await websocket.close(code=1008, reason="Unauthorized")
-            return
+    auth_token = dashboard_auth_token()
+    subprotocol_header = websocket.headers.get("sec-websocket-protocol", "")
+    subprotocols = [p.strip() for p in subprotocol_header.split(",") if p.strip()]
+    if auth_token and not is_dashboard_authorized(
+        authorization=websocket.headers.get("Authorization", ""),
+        query_token=websocket.query_params.get("token", ""),
+        header_token=websocket.headers.get("X-Dashboard-Token", ""),
+        subprotocols=subprotocols,
+    ):
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
 
+    accept_subprotocol = WS_AUTH_PROTOCOL if auth_token else None
+    await websocket.accept(subprotocol=accept_subprotocol)
     await manager.connect(websocket)
     try:
         while True:

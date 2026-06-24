@@ -53,17 +53,17 @@ class DebateOrchestrator:
                 bear_factors.append(f"{sig.agent_name}: {sig.reasoning}")
 
         if features.rsi_14 < 30:
-            bull_score += 0.2
+            bull_score += 0.05
             bull_factors.append(f"RSI oversold at {features.rsi_14:.1f}")
         if features.rsi_14 > 70:
-            bear_score += 0.2
+            bear_score += 0.05
             bear_factors.append(f"RSI overbought at {features.rsi_14:.1f}")
 
         if features.ema_9 > features.ema_21:
-            bull_score += 0.15
+            bull_score += 0.05
             bull_factors.append("EMA momentum bullish")
         elif features.ema_9 < features.ema_21:
-            bear_score += 0.15
+            bear_score += 0.05
             bear_factors.append("EMA momentum bearish")
 
         if context and context.get("semantic_best_agent"):
@@ -91,11 +91,11 @@ class DebateOrchestrator:
         if bull_score > bear_score and bull_score > 0.3:
             winner = "bull"
             direction = Direction.BUY
-            confidence = min(bull_score / max(len(signals), 1), 1.0)
+            confidence = bull_case.confidence
         elif bear_score > bull_score and bear_score > 0.3:
             winner = "bear"
             direction = Direction.SELL
-            confidence = min(bear_score / max(len(signals), 1), 1.0)
+            confidence = bear_case.confidence
         else:
             winner = "neutral"
             direction = Direction.HOLD

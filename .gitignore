@@ -47,5 +47,8 @@ frontend/dist_bak_test/
 # Testing
 .pytest_cache/
 
-# Cursor (local machine paths)
-.cursor/
+# pricer research datasets (local only)
+pricer-output*/
+
+# Debug session logs
+debug-*.log

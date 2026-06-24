@@ -37,7 +37,74 @@ python main.py --mode live --phase round1
 - `/app/logs` → shared
 - `/app/data` → shared (includes `runtime_state.json`, `trade_memory.db`)
 
-**Env:** `ANTHROPIC_API_KEY`, `ZMQ_HOST`, `ZMQ_*_PORT`, `QUANTAI_PHASE`
+**Env:** `ANTHROPIC_API_KEY`, `QUANTAI_LLM_ALLOW_ANTHROPIC=true`, `QUANTAI_LLM_PROVIDER=anthropic`, `ZMQ_HOST`, `ZMQ_*_PORT`, `QUANTAI_PHASE`, plus optional integrations below.
+
+#### Core engine secrets
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ANTHROPIC_API_KEY` | Yes (Claude routing) | MetaOrchestrator Claude API key |
+| `QUANTAI_LLM_ALLOW_ANTHROPIC` | Yes (Claude routing) | Set `true` to include Claude in orchestrator provider chain |
+| `QUANTAI_LLM_PROVIDER` | Recommended | `anthropic` for Claude-first; `doubleword` for Doubleword-first |
+| `META_ORCHESTRATOR_MODEL` | Optional | Anthropic model id (e.g. `claude-sonnet-4-6`) — not a Doubleword model name |
+| `DOUBLEWORD_MODEL` / `DOUBLEWORD_MODEL_COMPLEX` | Optional | Doubleword models when using Doubleword provider |
+| `META_ORCHESTRATOR_COMPLEX_MODEL` | Optional | Set `true` to use `DOUBLEWORD_MODEL_COMPLEX` (default `false`) |
+| `ZMQ_HOST` | Yes (live) | Tunnel endpoint to local MT5 DWX bridge |
+| `ZMQ_COMMAND_PORT` | Yes (live) | Default `32768` |
+| `ZMQ_CONFIRM_PORT` | Yes (live) | Default `32769` |
+| `ZMQ_TICK_PORT` | Yes (live) | Default `32770` |
+| `QUANTAI_PHASE` | Yes | `round1`, `round2`, etc. |
+| `LOGFIRE_TOKEN` | Optional | Pydantic Logfire — traces on engine cycles and API routes |
+
+#### Notion sync (engine service)
+
+Auto-enables when `NOTION_API_KEY` and at least one database ID are set (unless `NOTION_SYNC_ENABLED=false`):
+
+| Variable | Description |
+|----------|-------------|
+| `NOTION_API_KEY` | Integration secret (`secret_...`) |
+| `NOTION_TRADE_JOURNAL_DS_ID` | Trade Journal database ID |
+| `NOTION_AGENT_PERF_DS_ID` | Agent Performance database ID |
+| `NOTION_RISK_EVENTS_DS_ID` | Risk Events database ID |
+| `NOTION_TASKS_DS_ID` | Tasks / implementation steps database ID |
+| `NOTION_AZ_PAGE_ID` | Optional page for A–Z operator guide blocks |
+| `NOTION_SYNC_ENABLED` | Set `false` to disable; empty/`true` auto-enables when configured |
+
+Validate locally: `python scripts/setup_notion_check.py` — see [NOTION_SETUP.md](../docs/NOTION_SETUP.md) for full steps.
+
+#### Intelligence layer (engine service)
+
+Context feeds for gating and sentiment — **not** pricing. See [data_usage.md](data_usage.md) Gate A policy.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `INTELLIGENCE_ENABLED` | `true` | Master switch for intelligence layer |
+| `NEWS_API_KEY` | — | NewsAPI key when `NEWS_API_SOURCE=newsapi`, or JBlanked fallback |
+| `NEWS_API_SOURCE` | `rapidapi_yahoo` | `fixture`, `newsapi`, `jblanked`, or `rapidapi_yahoo` |
+| `RAPIDAPI_KEY` | — | RapidAPI key for Yahoo news, Forex Factory calendar, cash-flow macro |
+| `RAPIDAPI_FOREX_FACTORY_TIMEZONE` | Central Time | Must match Forex Factory scraper supported timezone string |
+| `RAPIDAPI_FINANCE_CASH_FLOW_SYMBOL` | `AAPL:NASDAQ` | Macro context symbol (not used for pricing) |
+| `JBLANKED_API_KEY` | — | JBlanked News API key (fallback) |
+| `JBLANKED_NEWS_SOURCE` | `mql5` | `mql5`, `forex-factory`, or `fxstreet` |
+| `CALENDAR_SOURCE` | `rapidapi_forex_factory` | `fixture`, `cache`, `jblanked`, or `rapidapi_forex_factory` |
+| `FEAR_GREED_ENABLED` | `true` | Crypto Fear & Greed macro overlay |
+| `MACRO_FRED_API_KEY` | — | Optional FRED macro data |
+| `INTELLIGENCE_REFRESH_MINUTES` | `5` | Snapshot refresh interval |
+| `INTELLIGENCE_LLM_BUDGET_PER_CYCLE` | `0.10` | USD cap for LLM sentiment per cycle |
+| `SENTIMENT_AGENT_ENABLED` | `true` | SentimentAgent participation |
+| `EVENT_RISK_GATE_ENABLED` | `true` | Block entries around high-impact events |
+
+Set `INTELLIGENCE_ENABLED=false` before a round if competition rules forbid external context feeds.
+
+#### Peer monitor (engine service)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COMPETITION_LEADERBOARD_URL` | — | Competition leaderboard API URL |
+| `PEER_MONITOR_MOCK` | `true` | `false` for live peer-relative sizing adjustments |
+| `PEER_MONITOR_FALLBACK` | `mock` | When live fetch fails: `mock` (simulated peers) or `neutral` (no peer sizing adj) |
+
+For production competition, set `PEER_MONITOR_MOCK=false` and provide `COMPETITION_LEADERBOARD_URL` from the competition portal.
 
 ### 2. Dashboard (`Dockerfile.dashboard`)
 
@@ -55,14 +122,30 @@ docker build -f Dockerfile.dashboard -t quantai-dashboard .
 **Env:**
 - `DASHBOARD_AUTH_TOKEN` — optional Bearer token for ingress protection
 - `DEMO_MODE=true` — force **Demo** badge when running API without engine (cloud dev)
-- `LOGFIRE_TOKEN` — Pydantic Logfire on engine cycles
+- `LOGFIRE_TOKEN` — optional Pydantic Logfire on dashboard API routes
 - `PORT` — default 8080
+
+The dashboard reads `runtime_state.json` from the shared volume; it does not need MT5, Notion, or intelligence env vars unless you run a combined single-container setup.
 
 Clients with auth enabled:
 
 ```bash
 curl -H "Authorization: Bearer $DASHBOARD_AUTH_TOKEN" https://dashboard.your-domain.com/api/status
 ```
+
+## Manual deploy checklist
+
+Use this before Round 1 if judges need a public dashboard URL:
+
+- [ ] Build images locally: `docker build -f Dockerfile.engine -t quantai-engine .` and `docker build -f Dockerfile.dashboard -t quantai-dashboard .`
+- [ ] Run `./scripts/deploy_smoke.sh` (or dashboard smoke test below)
+- [ ] Create Northflank **shared volume**; mount `/app/logs` and `/app/data` on engine + dashboard
+- [ ] **Engine service**: internal only; set `ANTHROPIC_API_KEY`, `ZMQ_*`, `QUANTAI_PHASE`, `NOTION_*`, `INTELLIGENCE_*`, `LOGFIRE_TOKEN`, `PEER_MONITOR_*`
+- [ ] **Dashboard service**: public `:8080`; set `DASHBOARD_AUTH_TOKEN`, `PORT=8080`
+- [ ] Configure **ingress** → public HTTPS URL for judges
+- [ ] Local MT5 + DWX EA running; ZMQ tunnel from Northflank engine to your machine
+- [ ] `curl -H "Authorization: Bearer $TOKEN" https://<dashboard>/api/status` returns live/simulate state
+- [ ] Overview → NotionSyncPanel green (after Notion setup — see [NOTION_SETUP.md](NOTION_SETUP.md))
 
 ## Northflank Setup
 
@@ -109,12 +192,11 @@ curl http://localhost:8080/health
 
 ## Notion Sync
 
-Set on the **engine** service (not dashboard). Sync auto-enables when `NOTION_API_KEY` and at least one database ID are set (unless `NOTION_SYNC_ENABLED=false`):
+Notion variables belong on the **engine** service (see env tables above). Quick validation:
 
+```bash
+python scripts/setup_notion_check.py
+python scripts/sync_notion_az.py --guide-page
 ```
-NOTION_API_KEY=secret_...
-NOTION_TRADE_JOURNAL_DS_ID=...
-NOTION_AGENT_PERF_DS_ID=...
-NOTION_RISK_EVENTS_DS_ID=...
-LOGFIRE_TOKEN=...
-```
+
+Dashboard: Overview → `NotionSyncPanel` confirms status via `GET /api/notion/status`.

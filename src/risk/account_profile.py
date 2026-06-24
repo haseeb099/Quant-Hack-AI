@@ -73,6 +73,18 @@ def position_notional(volume: float, contract_size: float, price: float) -> floa
     return abs(volume * contract_size * price)
 
 
+def position_notional_from_dict(
+    pos: dict,
+    contract_size: float,
+    price_key: str = "price_open",
+) -> float:
+    """Notional for an MT5 position dict using contract size."""
+    volume = float(pos.get("volume", 0))
+    price = float(pos.get(price_key, 0) or pos.get("price_current", 0))
+    cs = float(pos.get("contract_size", 0)) or contract_size
+    return position_notional(volume, cs, price)
+
+
 def normalize_concentration(
     position_notional_value: float,
     equity: float,

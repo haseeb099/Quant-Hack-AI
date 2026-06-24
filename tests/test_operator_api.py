@@ -61,3 +61,40 @@ def test_northflank_deploy_endpoint(client):
     assert names == {"quantai-engine", "quantai-dashboard"}
     assert "env_configured" in body
     assert "smoke_commands" in body
+
+
+def test_operator_snapshot_endpoint(client):
+    r = client.get("/api/operator/snapshot")
+    assert r.status_code == 200
+    body = r.json()
+    assert "available" in body
+    assert "snapshot" in body
+
+
+def test_operator_snapshot_history_endpoint(client):
+    r = client.get("/api/operator/snapshot/history?limit=10")
+    assert r.status_code == 200
+    body = r.json()
+    assert "count" in body
+    assert "history" in body
+    assert isinstance(body["history"], list)
+
+
+def test_operator_watchdog_trigger_requires_confirm(client, monkeypatch):
+    monkeypatch.setattr(
+        "src.web.routes.operator.run_operator_watchdog_cycle",
+        lambda **kwargs: {"status": "GREEN", "timestamp": "2026-01-01T00:00:00+00:00"},
+    )
+    r = client.post("/api/operator/watchdog/trigger", json={"confirm": False})
+    assert r.status_code == 400
+    r2 = client.post("/api/operator/watchdog/trigger", json={"confirm": True})
+    assert r2.status_code == 200
+    assert r2.json()["ok"] is True
+
+
+def test_engine_open_trades_endpoint(client):
+    r = client.get("/api/engine/open_trades")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 0
+    assert body["tickets"] == []

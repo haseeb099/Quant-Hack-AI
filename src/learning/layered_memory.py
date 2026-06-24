@@ -28,10 +28,55 @@ class TradeRecord:
     pnl: float | None = None
     features_snapshot: dict[str, Any] = field(default_factory=dict)
     agent_votes: list[dict[str, Any]] = field(default_factory=list)
+    attribution_json: dict[str, Any] = field(default_factory=dict)
     orchestrator_reasoning: str = ""
     entry_time: str = ""
     exit_time: str = ""
     round_id: str = ""
+
+
+def build_trade_attribution(
+    *,
+    signals: list[Any],
+    decision_direction: str,
+    primary_agent: str,
+    orchestrator_used_ai: bool,
+    semantic_best_agent: str | None = None,
+) -> dict[str, Any]:
+    """Build vote-aware attribution blob for a closed trade."""
+    buy = sum(
+        1 for s in signals
+        if getattr(getattr(s, "direction", None), "value", s.get("direction") if isinstance(s, dict) else None) == "BUY"
+        and (getattr(s, "is_actionable", False) or (isinstance(s, dict) and s.get("confidence", 0) >= 0.65))
+    )
+    sell = sum(
+        1 for s in signals
+        if getattr(getattr(s, "direction", None), "value", s.get("direction") if isinstance(s, dict) else None) == "SELL"
+        and (getattr(s, "is_actionable", False) or (isinstance(s, dict) and s.get("confidence", 0) >= 0.65))
+    )
+    actionable = buy + sell
+
+    contributing: list[str] = []
+    for s in signals:
+        if isinstance(s, dict):
+            direction = str(s.get("direction", "HOLD"))
+            agent = str(s.get("agent", ""))
+            conf = float(s.get("confidence", 0))
+            is_actionable = conf >= 0.65 and direction in ("BUY", "SELL")
+        else:
+            direction = s.direction.value
+            agent = s.agent_name
+            is_actionable = s.is_actionable
+        if is_actionable and direction == decision_direction and agent:
+            contributing.append(agent)
+
+    return {
+        "primary_agent": primary_agent,
+        "contributing_agents": sorted(set(contributing)),
+        "vote_consensus": {"buy": buy, "sell": sell, "actionable": actionable},
+        "orchestrator_used_ai": orchestrator_used_ai,
+        "semantic_best_agent": semantic_best_agent,
+    }
 
 
 class LayeredMemory:
@@ -71,18 +116,29 @@ class LayeredMemory:
                     round_id TEXT
                 )
             """)
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(trades)").fetchall()}
+            if "round_id" not in cols:
+                conn.execute("ALTER TABLE trades ADD COLUMN round_id TEXT")
+            if "attribution_json" not in cols:
+                conn.execute("ALTER TABLE trades ADD COLUMN attribution_json TEXT")
 
     def store_trade(self, record: TradeRecord) -> None:
         record.round_id = record.round_id or self.round_id
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                """INSERT OR REPLACE INTO trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                """INSERT OR REPLACE INTO trades (
+                    trade_id, symbol, session, regime, agent, direction,
+                    entry_price, exit_price, r_multiple, pnl,
+                    features_json, votes_json, attribution_json, reasoning,
+                    entry_time, exit_time, round_id
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     record.trade_id, record.symbol, record.session, record.regime,
                     record.agent, record.direction, record.entry_price, record.exit_price,
                     record.r_multiple, record.pnl,
                     json.dumps(record.features_snapshot),
                     json.dumps(record.agent_votes),
+                    json.dumps(record.attribution_json or {}),
                     record.orchestrator_reasoning,
                     record.entry_time or datetime.now(timezone.utc).isoformat(),
                     record.exit_time,
@@ -135,6 +191,7 @@ class LayeredMemory:
         top_k: int = 5,
     ) -> list[TradeRecord]:
         with sqlite3.connect(self.db_path) as conn:
+            columns = [r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()]
             rows = conn.execute(
                 """SELECT * FROM trades
                    WHERE regime = ? AND symbol = ? AND session = ?
@@ -142,7 +199,7 @@ class LayeredMemory:
                 (regime, symbol, session, top_k * 3),
             ).fetchall()
 
-        records = [self._row_to_record(r) for r in rows]
+        records = [self._row_to_record(r, columns) for r in rows]
         scored: list[tuple[float, TradeRecord]] = []
         for rec in records:
             score = 1.0
@@ -179,10 +236,11 @@ class LayeredMemory:
     def rebuild_semantic_layer(self) -> None:
         self._semantic = {}
         with sqlite3.connect(self.db_path) as conn:
+            columns = [r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()]
             rows = conn.execute("SELECT * FROM trades").fetchall()
 
         for row in rows:
-            rec = self._row_to_record(row)
+            rec = self._row_to_record(row, columns)
             key = self._semantic_key(rec.regime, rec.symbol, rec.session)
             if key not in self._semantic:
                 self._semantic[key] = {"agents": defaultdict(lambda: {"wins": 0, "total": 0, "avg_r": 0.0})}
@@ -193,6 +251,69 @@ class LayeredMemory:
             if rec.r_multiple is not None:
                 n = stats["total"]
                 stats["avg_r"] = (stats["avg_r"] * (n - 1) + rec.r_multiple) / n
+
+    def agent_vote_attribution(self, agent: str, regime: str | None = None) -> dict[str, float]:
+        """Credit win/loss to agents that voted with the trade direction (fractional)."""
+        query = "SELECT direction, r_multiple, attribution_json FROM trades WHERE 1=1"
+        params: list[str] = []
+        if regime:
+            query += " AND regime = ?"
+            params.append(regime)
+
+        wins = 0.0
+        losses = 0.0
+        total_credit = 0.0
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        for direction, r_multiple, attr_raw in rows:
+            if r_multiple is None:
+                continue
+            try:
+                attr = json.loads(attr_raw or "{}")
+            except json.JSONDecodeError:
+                attr = {}
+            contributors = attr.get("contributing_agents") or []
+            if not contributors and attr.get("primary_agent"):
+                contributors = [attr["primary_agent"]]
+            if agent not in contributors:
+                continue
+            credit = 1.0 / len(contributors)
+            total_credit += credit
+            if r_multiple > 0:
+                wins += credit
+            else:
+                losses += credit
+
+        if total_credit <= 0:
+            return {"win_rate": None, "avg_r": 0.0, "sample_size": 0, "credit_total": 0.0}
+
+        query_r = "SELECT r_multiple, attribution_json FROM trades WHERE 1=1"
+        params_r: list[str] = []
+        if regime:
+            query_r += " AND regime = ?"
+            params_r.append(regime)
+        r_weighted = 0.0
+        with sqlite3.connect(self.db_path) as conn:
+            for r_multiple, attr_raw in conn.execute(query_r, params_r).fetchall():
+                if r_multiple is None:
+                    continue
+                try:
+                    attr = json.loads(attr_raw or "{}")
+                except json.JSONDecodeError:
+                    attr = {}
+                contributors = attr.get("contributing_agents") or []
+                if not contributors and attr.get("primary_agent"):
+                    contributors = [attr["primary_agent"]]
+                if agent in contributors:
+                    r_weighted += float(r_multiple) / len(contributors)
+
+        return {
+            "win_rate": wins / total_credit,
+            "avg_r": r_weighted / total_credit,
+            "sample_size": int(round(total_credit)),
+            "credit_total": total_credit,
+        }
 
     def agent_performance(self, agent: str, regime: str | None = None) -> dict[str, float]:
         query = "SELECT r_multiple FROM trades WHERE agent = ?"
@@ -206,7 +327,7 @@ class LayeredMemory:
 
         r_values = [r[0] for r in rows if r[0] is not None]
         if not r_values:
-            return {"win_rate": 0.5, "avg_r": 0.0, "sample_size": 0}
+            return {"win_rate": None, "avg_r": 0.0, "sample_size": 0}
 
         wins = sum(1 for r in r_values if r > 0)
         return {
@@ -220,7 +341,32 @@ class LayeredMemory:
         return f"{regime}|{symbol}|{session}"
 
     @staticmethod
-    def _row_to_record(row: tuple) -> TradeRecord:
+    def _row_to_record(row: tuple, columns: list[str] | None = None) -> TradeRecord:
+        if columns:
+            data = dict(zip(columns, row, strict=False))
+            try:
+                attribution = json.loads(data.get("attribution_json") or "{}")
+            except json.JSONDecodeError:
+                attribution = {}
+            return TradeRecord(
+                trade_id=data.get("trade_id", ""),
+                symbol=data.get("symbol", ""),
+                session=data.get("session", ""),
+                regime=data.get("regime", ""),
+                agent=data.get("agent", ""),
+                direction=data.get("direction", ""),
+                entry_price=data.get("entry_price", 0.0),
+                exit_price=data.get("exit_price"),
+                r_multiple=data.get("r_multiple"),
+                pnl=data.get("pnl"),
+                features_snapshot=json.loads(data.get("features_json") or "{}"),
+                agent_votes=json.loads(data.get("votes_json") or "[]"),
+                attribution_json=attribution,
+                orchestrator_reasoning=data.get("reasoning") or "",
+                entry_time=data.get("entry_time") or "",
+                exit_time=data.get("exit_time") or "",
+                round_id=data.get("round_id") or "",
+            )
         return TradeRecord(
             trade_id=row[0], symbol=row[1], session=row[2], regime=row[3],
             agent=row[4], direction=row[5], entry_price=row[6], exit_price=row[7],

@@ -9,9 +9,20 @@ from typing import Any
 def copilot_provider_name() -> str:
     if os.getenv("DOUBLEWORD_API_KEY", "").strip():
         return "doubleword"
+    if os.getenv("PYDANTIC_AI_GATEWAY_API_KEY", "").strip():
+        return "logfire_gateway"
     if os.getenv("GROQ_API_KEY", "").strip() or os.getenv("Groq_API_KEY", "").strip():
         return "groq"
     return "template"
+
+
+def _copilot_model() -> str:
+    if os.getenv("PYDANTIC_AI_GATEWAY_API_KEY", "").strip() and not os.getenv("DOUBLEWORD_API_KEY", "").strip():
+        return os.getenv("COPILOT_GATEWAY_MODEL", "gateway/openai:gpt-4o-mini")
+    from src.utils.llm_providers import copilot_llm_enabled, resolve_llm_model
+
+    model, _provider = resolve_llm_model(role="copilot")
+    return model
 
 
 def enhance_summary_with_llm(context: dict[str, Any], template_summary: str) -> tuple[str, str]:
@@ -28,15 +39,7 @@ def enhance_summary_with_llm(context: dict[str, Any], template_summary: str) -> 
             summary: str = Field(description="2-4 sentences grounded in provided facts only")
             risks: list[str] = Field(default_factory=list, max_length=5)
 
-        if provider == "doubleword":
-            os.environ.setdefault("OPENAI_API_KEY", os.getenv("DOUBLEWORD_API_KEY", ""))
-            os.environ.setdefault("OPENAI_BASE_URL", "https://api.doubleword.ai/v1")
-            model = "openai:gpt-4o-mini"
-        else:
-            groq = os.getenv("GROQ_API_KEY") or os.getenv("Groq_API_KEY", "")
-            os.environ.setdefault("OPENAI_API_KEY", groq)
-            os.environ.setdefault("OPENAI_BASE_URL", "https://api.groq.com/openai/v1")
-            model = "openai:llama-3.3-70b-versatile"
+        model = _copilot_model()
 
         market = context.get("market", {})
         facts = {

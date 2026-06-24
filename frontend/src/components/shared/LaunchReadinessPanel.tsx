@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { CheckCircle2, Circle, Clock, Rocket, XCircle } from "lucide-react";
+import { CheckCircle2, Circle, Clock, Copy, Rocket, XCircle } from "lucide-react";
+import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api, queryKeys } from "@/lib/api";
@@ -23,6 +25,33 @@ function formatCountdown(seconds: number): string {
   if (h > 0) return `${h}h ${m}m`;
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
+}
+
+function CopyRemediationButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className="h-6 px-1.5 text-[10px]"
+      onClick={() => void copy()}
+    >
+      <Copy className="mr-1 size-3" />
+      {copied ? "Copied" : "Copy"}
+    </Button>
+  );
 }
 
 export function LaunchReadinessPanel() {
@@ -87,7 +116,10 @@ export function LaunchReadinessPanel() {
                 </div>
                 <p className="mt-0.5 text-muted-foreground">{check.message}</p>
                 {check.remediation && check.status !== "pass" && (
-                  <p className="mt-1 text-[10px] text-primary/90">{check.remediation}</p>
+                  <div className="mt-1 flex flex-wrap items-center gap-1">
+                    <span className="text-[10px] text-primary/90">{check.remediation}</span>
+                    <CopyRemediationButton text={check.remediation} />
+                  </div>
                 )}
               </div>
             </li>

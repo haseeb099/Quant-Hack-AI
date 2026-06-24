@@ -5,7 +5,11 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export function formatCurrency(value: number, compact = false): string {
+export function formatCurrency(
+  value: number | null | undefined,
+  compact = false,
+): string {
+  if (value == null || Number.isNaN(value)) return "—";
   if (compact && Math.abs(value) >= 1_000_000) {
     return `$${(value / 1_000_000).toFixed(2)}M`;
   }
@@ -14,6 +18,14 @@ export function formatCurrency(value: number, compact = false): string {
     currency: "USD",
     maximumFractionDigits: 0,
   }).format(value);
+}
+
+export function formatTickAgeMs(ms: number | null | undefined): string {
+  if (ms == null || Number.isNaN(ms)) return "—";
+  const sec = ms / 1000;
+  if (sec < 60) return `${sec.toFixed(1)}s`;
+  if (sec < 3600) return `${Math.round(sec / 60)}m`;
+  return `${(sec / 3600).toFixed(1)}h`;
 }
 
 export function formatPercent(value: number, digits = 2): string {

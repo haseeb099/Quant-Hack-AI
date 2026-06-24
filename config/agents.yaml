@@ -1,97 +1,123 @@
-# Agent configuration — base weights and parameters
+# Agent configuration — competition v2 (audit-driven, execution-unblocked)
+
 agents:
+
   trend_surfer:
-    weight: 0.25
+    weight: 0.42
     timeframes: [H1, H4]
     ema_fast: 9
     ema_medium: 21
     ema_slow: 50
-    adx_threshold: 25
-    stop_atr_mult: 2.0
-    target_atr_mult: 3.0
-    base_confidence: 0.60
+    adx_threshold: 18
+    stop_atr_mult: 1.6
+    target_atr_mult: 3.5
+    base_confidence: 0.58
     max_confidence: 0.95
+    pullback_atr_mult: 2.0
+    require_mtf_alignment: false
     best_regimes: [trending, volatile]
 
   breakout_hunter:
-    weight: 0.25
+    weight: 0.02
     timeframes: [M15, H1]
     donchian_period: 20
-    bb_squeeze_percentile: 5
-    volume_spike_threshold: 1.5
-    rsi_filter_long: 75
-    rsi_filter_short: 25
-    stop_atr_mult: 1.5
-    target_atr_mult: 3.0
-    base_confidence: 0.65
+    bb_squeeze_percentile: 10
+    min_squeeze_bars: 5
+    volume_spike_threshold: 1.20
+    rsi_filter_long: 78
+    rsi_filter_short: 22
+    allow_first_pierce: false
+    crypto_session_gate: false
+    stop_atr_mult: 1.3
+    target_atr_mult: 3.2
+    base_confidence: 0.64
     max_confidence: 0.90
-    best_regimes: [volatile, calm]
+    best_regimes: [volatile]
 
   momentum_pulse:
-    weight: 0.15
+    weight: 0.10
     timeframes: [M15, H1]
-    adx_threshold: 25
-    volume_threshold: 1.2
-    stop_atr_mult: 1.8
-    target_atr_mult: 2.5
+    adx_threshold: 18
+    volume_threshold: 1.05
+    stop_atr_mult: 1.4
+    target_atr_mult: 3.0
     base_confidence: 0.55
-    max_confidence: 0.80
-    best_regimes: [trending, volatile]
+    max_confidence: 0.88
+    allow_continuation: true
+    best_regimes: [volatile, ranging, trending]
 
   mean_reversion:
-    weight: 0.20
+    weight: 0.08
     timeframes: [M15]
-    rsi_oversold: 30
-    rsi_overbought: 70
-    adx_max: 25
-    bb_proximity_pct: 5
+    rsi_oversold: 35
+    rsi_overbought: 65
+    adx_max: 30
+    h1_adx_max: 28
+    bb_proximity_pct: 12
     stop_atr_mult: 1.0
-    min_confidence: 0.70
-    max_confidence: 0.90
+    min_confidence: 0.54
+    max_confidence: 0.88
+    require_divergence: false
     best_regimes: [ranging, calm]
 
   sentiment_agent:
-    weight: 0.10
+    weight: 0.08
     timeframes: [M15]
-    min_score: 0.4
-    min_confidence: 0.70
+    min_score: 0.25
+    min_confidence: 0.50
     stop_atr_mult: 1.5
-    target_atr_mult: 2.5
-    base_confidence: 0.65
-    max_confidence: 0.85
-    best_regimes: [volatile, calm]
+    target_atr_mult: 2.8
+    base_confidence: 0.58
+    max_confidence: 0.88
+    best_regimes: [volatile, calm, trending]
+
+  ml_signal:
+    weight: 0.18
+    timeframes: [M15]
+    model_path: data/models/signal_model.pkl
+    stop_atr_mult: 1.5
+    target_atr_mult: 2.8
+    min_confidence: 0.45
+    base_confidence: 0.55
+    max_confidence: 0.88
+    best_regimes: [trending, ranging, volatile, calm]
 
   meta_orchestrator:
-    model: claude-sonnet-4-20250514
-    temperature: 0.1
-    min_agent_confidence: 0.65
-    cooldown_minutes: 5
+    anthropic_model: claude-sonnet-4-6
+    doubleword_model: openai/gpt-oss-20b
+    temperature: 0.12
+    min_agent_confidence: 0.35
+    cooldown_minutes: 3
     max_cost_per_decision: 0.05
-    size_scale_range: [0.5, 1.5]
+    size_scale_range: [0.95, 1.50]
+    regime_mismatch_penalty: 0.72
 
-# Regime weight boosts (multiplied at runtime)
 regime_boosts:
   trending:
-    trend_surfer: 1.3
-    breakout_hunter: 1.0
-    momentum_pulse: 1.2
-    mean_reversion: 0.5
-    sentiment_agent: 0.9
+    trend_surfer: 1.45
+    breakout_hunter: 0.40
+    momentum_pulse: 1.15
+    mean_reversion: 0.45
+    sentiment_agent: 1.00
+    ml_signal: 1.20
   ranging:
-    trend_surfer: 0.6
-    breakout_hunter: 0.7
-    momentum_pulse: 0.8
-    mean_reversion: 1.4
-    sentiment_agent: 1.0
+    trend_surfer: 0.85
+    breakout_hunter: 0.50
+    momentum_pulse: 1.10
+    mean_reversion: 1.45
+    sentiment_agent: 1.15
+    ml_signal: 1.15
   volatile:
-    trend_surfer: 1.0
-    breakout_hunter: 1.3
-    momentum_pulse: 1.1
-    mean_reversion: 0.6
-    sentiment_agent: 1.3
+    trend_surfer: 1.15
+    breakout_hunter: 0.55
+    momentum_pulse: 1.35
+    mean_reversion: 0.55
+    sentiment_agent: 1.20
+    ml_signal: 1.15
   calm:
-    trend_surfer: 0.8
-    breakout_hunter: 1.2
-    momentum_pulse: 0.7
-    mean_reversion: 1.1
-    sentiment_agent: 1.2
+    trend_surfer: 0.90
+    breakout_hunter: 0.50
+    momentum_pulse: 0.80
+    mean_reversion: 1.25
+    sentiment_agent: 1.10
+    ml_signal: 1.10

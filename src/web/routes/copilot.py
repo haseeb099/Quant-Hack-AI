@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 
 from src.copilot.analyzer import CopilotAnalyzer
 from src.copilot.models import ChatRequest, SymbolAnalysisResponse
+from src.utils.llm_providers import copilot_llm_enabled
 from src.utils.logger import instrument_span, log_event
 from src.web.runtime_state import read_state
 
@@ -33,20 +34,22 @@ def _check_rate_limit(client_id: str) -> None:
 
 
 @router.post("/api/copilot/analyze-symbol", response_model=SymbolAnalysisResponse)
+@instrument_span("quantai.copilot.analyze_symbol")
 def analyze_symbol(
     request: Request,
     symbol: str = Query(..., min_length=3),
     direction: str = Query("BUY", pattern="^(BUY|SELL|buy|sell)$"),
     volume: float = Query(0.01, gt=0, le=100),
-    use_llm: bool = Query(True),
+    use_llm: bool | None = Query(None),
 ) -> SymbolAnalysisResponse:
     _check_rate_limit(request.client.host if request.client else "local")
+    effective_use_llm = copilot_llm_enabled() if use_llm is None else use_llm
     return _analyzer.analyze_symbol(
         symbol=symbol.strip(),
         volume=volume,
         direction=direction.upper(),
         state=read_state(),
-        use_llm=use_llm,
+        use_llm=effective_use_llm,
     )
 
 
@@ -60,7 +63,7 @@ async def copilot_chat(body: ChatRequest, request: Request) -> StreamingResponse
     async def event_stream() -> AsyncIterator[str]:
         yield _sse({"type": "start", "message": "Analyzing…"})
 
-        result_reply, analysis = _analyzer.chat(body.message, symbol=body.symbol, state=read_state(), use_llm=True)
+        result_reply, analysis = _analyzer.chat(body.message, symbol=body.symbol, state=read_state())
 
         if analysis is None:
             yield _sse({"type": "text", "content": result_reply})

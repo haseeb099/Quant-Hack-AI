@@ -8,7 +8,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from src.intelligence.jblanked_client import (
+    fetch_jblanked_events,
+    jblanked_api_key,
+    jblanked_impact_tier,
+    parse_jblanked_date,
+)
 from src.intelligence.models import CalendarEvent
+from src.intelligence.rapidapi_client import (
+    fetch_forex_factory_calendar_window,
+    parse_forex_factory_event,
+    rapidapi_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +50,70 @@ class CalendarMonitor:
         self.cache_path = self.cache_dir / "calendar_cache.json"
         self._events: list[CalendarEvent] = []
         self._last_refresh: datetime | None = None
+        self.live_mode = bool(config.get("live_mode", False))
+        self.cache_max_age_hours = int(cal_cfg.get("cache_max_age_hours", 24))
+        news_cfg = config.get("news", {})
+        self.jblanked_source = news_cfg.get("jblanked_source", "mql5")
+        self.jblanked_base = news_cfg.get(
+            "jblanked_base_url", "https://www.jblanked.com/news/api"
+        ).rstrip("/")
+        self.rapidapi_days_ahead = int(cal_cfg.get("rapidapi_days_ahead", 1))
+
+    def _rapidapi_forex_factory_events(self, now: datetime) -> list[CalendarEvent]:
+        if not rapidapi_key():
+            logger.warning("RapidAPI key missing — calendar fetch skipped")
+            return []
+        raw = fetch_forex_factory_calendar_window(days_ahead=self.rapidapi_days_ahead)
+        events: list[CalendarEvent] = []
+        for item in raw:
+            parsed = parse_forex_factory_event(item)
+            name = parsed["name"]
+            tier = parsed["impact"]
+            if tier == "tier_3":
+                tier = self._classify_impact(name)
+            events.append(
+                CalendarEvent(
+                    name=name,
+                    currency=parsed["currency"],
+                    impact=tier,
+                    scheduled_at=parsed["scheduled_at"],
+                    actual=parsed["actual"],
+                    forecast=parsed["forecast"],
+                    previous=parsed["previous"],
+                ),
+            )
+        return events
+
+    def _jblanked_calendar_events(self, now: datetime) -> list[CalendarEvent]:
+        raw = fetch_jblanked_events(
+            source=self.jblanked_source,
+            mode="calendar",
+            base_url=self.jblanked_base,
+            api_key=jblanked_api_key(),
+        )
+        if raw is None:
+            return []
+        events: list[CalendarEvent] = []
+        for item in raw:
+            name = (item.get("Name") or "Economic event").strip()
+            currency = (item.get("Currency") or "").strip().upper()
+            scheduled = parse_jblanked_date(str(item.get("Date") or now.isoformat()))
+            impact_label = (item.get("Impact") or "").strip()
+            tier = jblanked_impact_tier(impact_label)
+            if tier == "tier_3" and impact_label:
+                tier = self._classify_impact(name)
+            events.append(
+                CalendarEvent(
+                    name=name,
+                    currency=currency,
+                    impact=tier,
+                    scheduled_at=scheduled,
+                    actual=str(item.get("Actual") or ""),
+                    forecast=str(item.get("Forecast") or ""),
+                    previous=str(item.get("Previous") or ""),
+                ),
+            )
+        return events
 
     def _classify_impact(self, name: str) -> str:
         name_lower = name.lower()
@@ -93,6 +168,20 @@ class CalendarMonitor:
         except (OSError, ValueError, TypeError):
             return []
 
+    def _cache_is_fresh(self) -> bool:
+        if not self.cache_path.exists():
+            return False
+        try:
+            raw = json.loads(self.cache_path.read_text(encoding="utf-8"))
+            refreshed_at = raw.get("refreshed_at")
+            if not refreshed_at:
+                return False
+            refreshed = _parse_dt(refreshed_at)
+            age_hours = (_utc_now() - refreshed).total_seconds() / 3600
+            return age_hours <= self.cache_max_age_hours
+        except (OSError, ValueError, TypeError):
+            return False
+
     def _save_cache(self, events: list[CalendarEvent]) -> None:
         payload = {
             "refreshed_at": _utc_now().isoformat(),
@@ -121,10 +210,25 @@ class CalendarMonitor:
             return self._events
 
         source = self.config.get("calendar", {}).get("source", "fixture")
-        if source == "cache":
+        if source == "cache" or (self.cache_path.exists() and self._cache_is_fresh() and source != "jblanked"):
             events = self._load_cache()
-        else:
+            if not events and not self.live_mode:
+                events = self._fixture_events(now)
+        elif source == "jblanked":
+            events = self._jblanked_calendar_events(now)
+            if not events and self.cache_path.exists():
+                events = self._load_cache()
+        elif source in ("rapidapi_forex_factory", "rapidapi"):
+            events = self._rapidapi_forex_factory_events(now)
+            if not events:
+                logger.info("RapidAPI calendar empty — trying JBlanked fallback")
+                events = self._jblanked_calendar_events(now)
+            if not events and self.cache_path.exists():
+                events = self._load_cache()
+        elif source == "fixture" or not self.live_mode:
             events = self._fixture_events(now)
+        else:
+            events = self._load_cache()
 
         cutoff = now - timedelta(hours=2)
         horizon = now + timedelta(hours=24)

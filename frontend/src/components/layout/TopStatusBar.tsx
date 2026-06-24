@@ -3,6 +3,7 @@ import { ConnectionIndicators } from "@/components/shared/ConnectionIndicators";
 import { DataSourceBadge } from "@/components/shared/DataSourceBadge";
 import { TradingControlBar } from "@/components/shared/TradingControlBar";
 import { PhaseBadge } from "@/components/shared/PhaseBadge";
+import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { useCycleCountdown, useLastTickAge } from "@/hooks/useWebSocket";
 import { api, queryKeys } from "@/lib/api";
@@ -41,21 +42,25 @@ export function TopStatusBar({ wsConnected }: TopStatusBarProps) {
   const tickAgeSec = useLastTickAge(status?.last_tick_age_ms);
 
   return (
-    <header className="sticky top-0 z-30 border-b border-border bg-panel/95 backdrop-blur">
-      <div className="flex h-14 items-center justify-between px-6">
-        <div className="flex items-center gap-4">
+    <header className="glass-panel sticky top-0 z-30 border-b border-border/80 bg-panel/90 backdrop-blur-md">
+      <div className="flex h-14 items-center justify-between gap-2 px-4 xl:px-6">
+        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto xl:gap-4">
           {status && (
-            <PhaseBadge phase={status.phase} ddTier={risk?.dd_tier} />
+            <PhaseBadge
+              phase={status.phase}
+              ddTier={risk?.dd_tier}
+              blockedSymbols={status.blocked_symbols}
+            />
           )}
           {status && <DataSourceBadge status={status} />}
-          <Separator orientation="vertical" className="h-6" />
+          <Separator orientation="vertical" className="hidden h-6 sm:block" />
           <ConnectionIndicators
             wsConnected={wsConnected}
             status={status}
             tickAgeSec={tickAgeSec}
           />
-          <Separator orientation="vertical" className="h-6" />
-          <span className="text-xs text-muted-foreground">
+          <Separator orientation="vertical" className="hidden h-6 sm:block" />
+          <span className="shrink-0 text-xs text-muted-foreground">
             Mode{" "}
             <span className="font-mono uppercase text-foreground">
               {status?.mode ?? "—"}
@@ -63,11 +68,18 @@ export function TopStatusBar({ wsConnected }: TopStatusBarProps) {
           </span>
         </div>
 
-        <div className="flex items-center gap-6">
+        <div className="flex shrink-0 items-center gap-3 xl:gap-6">
           {account && (
             <>
               <div className="hidden text-right text-xs md:block">
-                <div className="text-muted-foreground">Equity</div>
+                <div className="flex items-center justify-end gap-1.5 text-muted-foreground">
+                  Equity
+                  {status?.account_profile === "micro" && (
+                    <Badge variant="outline" className="px-1 py-0 text-[9px] uppercase">
+                      Micro
+                    </Badge>
+                  )}
+                </div>
                 <div className="font-mono">{formatCurrency(account.equity, true)}</div>
               </div>
               <Separator orientation="vertical" className="hidden h-6 md:block" />

@@ -61,12 +61,96 @@ def notify_market_alert(payload: dict[str, Any]) -> None:
             logger.debug("Alert listener failed", exc_info=True)
 
 
+def _classify_skip_reason(reason: str) -> str:
+    """Bucket skip reasons for dashboard clarity (operational vs data failure)."""
+    if reason.startswith("Live filter:"):
+        return "blocked"
+    if reason.startswith("Net directional"):
+        return "net_directional"
+    if "Insufficient OHLCV" in reason or "OHLCV" in reason and "Insufficient" in reason:
+        return "data_failure"
+    if reason.startswith("Session inactive"):
+        return "session"
+    if "Open position already exists" in reason:
+        return "open_position"
+    if "Symbol cooldown" in reason:
+        return "cooldown"
+    if reason == "HOLD decision":
+        return "hold"
+    if "blocked" in reason.lower() or "Blocked" in reason:
+        return "blocked"
+    return "other"
+
+
+def _skip_reason_map(last_cycle: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """Map symbol -> skip reason and category from last cycle decisions."""
+    out: dict[str, dict[str, str]] = {}
+    for decision in last_cycle.get("decisions", []):
+        if not isinstance(decision, dict):
+            continue
+        if decision.get("status") != "skipped":
+            continue
+        symbol = str(decision.get("symbol") or "")
+        if not symbol:
+            continue
+        reason = str(decision.get("skip_reason") or decision.get("reasoning") or "")
+        out[symbol] = {
+            "cycle_skip_reason": reason,
+            "skip_category": _classify_skip_reason(reason),
+        }
+    return out
+
+
+def _normalize_instrument_health(data: dict[str, Any]) -> dict[str, Any]:
+    """Green when ticks are fresh; amber only for stale ticks or missing tick+bar."""
+    tick_age = data.get("tick_age_ms")
+    last_close = data.get("last_close")
+    health = "red"
+    if tick_age is not None and float(tick_age) < 2000:
+        health = "green"
+    elif tick_age is not None and float(tick_age) < 5000:
+        health = "amber"
+    elif last_close is not None:
+        health = "amber"
+    data = {**data, "health": health, "market_health": health}
+    return data
+
+
+def _phase_blocked_symbols(phase: str) -> list[str]:
+    try:
+        from src.engine.config import load_yaml
+
+        phases = load_yaml("phases.yaml").get("phases", {})
+        rules = phases.get(phase, {}) if isinstance(phases, dict) else {}
+        blocked = rules.get("blocked_symbols", [])
+        return [str(s) for s in blocked] if isinstance(blocked, list) else []
+    except Exception:
+        return []
+
+
+def _enrich_instruments(
+    instruments: dict[str, Any],
+    last_cycle: dict[str, Any] | None,
+) -> dict[str, Any]:
+    skips = _skip_reason_map(last_cycle or {})
+    enriched: dict[str, Any] = {}
+    for sym, raw in instruments.items():
+        data = _normalize_instrument_health(dict(raw))
+        if sym in skips:
+            data.update(skips[sym])
+        enriched[sym] = data
+    return enriched
+
+
 def _merge_instruments(
     state: dict[str, Any],
     instruments: dict[str, Any],
+    *,
+    last_cycle: dict[str, Any] | None = None,
 ) -> None:
     existing = state.setdefault("instruments", {})
-    for sym, data in instruments.items():
+    enriched = _enrich_instruments(instruments, last_cycle)
+    for sym, data in enriched.items():
         existing[sym] = {**existing.get(sym, {}), **data}
 
 
@@ -75,7 +159,10 @@ def update_live_market(payload: dict[str, Any]) -> dict[str, Any]:
     state = read_state()
     instruments = payload.get("instruments", {})
     if instruments:
-        _merge_instruments(state, instruments)
+        _merge_instruments(state, instruments, last_cycle=state.get("last_cycle"))
+        # Re-normalize health for all known instruments when ticks refresh
+        existing = state.get("instruments", {})
+        state["instruments"] = _enrich_instruments(existing, state.get("last_cycle"))
     state["market"] = {
         "last_tick_at": payload.get("last_tick_at"),
         "last_tick_age_ms": payload.get("last_tick_age_ms"),
@@ -104,6 +191,8 @@ class StatePublisher:
                 "margin_usage_pct": margin.get("margin_usage_pct", 0),
                 "effective_leverage": margin.get("effective_leverage", 0),
                 "concentration_pct": margin.get("concentration_pct", 0),
+                "margin_level_pct": margin.get("margin_level_pct"),
+                "net_directional_pct": margin.get("net_directional_pct", 0),
             }
             risk.pop("margin", None)
 
@@ -134,23 +223,45 @@ class StatePublisher:
             "risk": {**state.get("risk", {}), **risk, "sharpe": risk.get("sharpe", 0)},
             "last_cycle": snapshot.get("last_cycle", state.get("last_cycle", {})),
         }
+        if snapshot.get("engine_config"):
+            updates["engine_config"] = snapshot["engine_config"]
         if cycle_start is not None:
             updates["last_cycle_at"] = cycle_start
         if next_cycle is not None:
             updates["next_cycle_at"] = next_cycle
         state.update(updates)
+        phase = str(updates.get("phase") or state.get("phase") or "")
+        state["phase_blocked_symbols"] = _phase_blocked_symbols(phase)
+        last_cycle = updates.get("last_cycle") or state.get("last_cycle")
         if snapshot.get("instruments"):
-            _merge_instruments(state, snapshot["instruments"])
-        if snapshot.get("market"):
-            state["market"] = snapshot["market"]
+            _merge_instruments(state, snapshot["instruments"], last_cycle=last_cycle)
+        market = snapshot.get("market")
+        if market is None:
+            existing_market = state.get("market", {})
+            market = {
+                "last_tick_at": existing_market.get("last_tick_at"),
+                "last_tick_age_ms": existing_market.get("last_tick_age_ms"),
+            }
+        state["market"] = market
         if snapshot.get("intelligence"):
             state["intelligence"] = snapshot["intelligence"]
 
-        equity = float(account.get("equity", 1_000_000))
+        equity_raw = account.get("equity")
+        equity: float | None = None
+        if equity_raw is not None:
+            try:
+                parsed = float(equity_raw)
+                if parsed > 0:
+                    equity = parsed
+            except (TypeError, ValueError):
+                equity = None
         append_equity_point(state, equity, state["timestamp"])
         write_state(state, self.state_path)
         _notify_listeners(state)
-        logger.debug("Published runtime state — equity=%.2f", equity)
+        if equity is not None:
+            logger.debug("Published runtime state — equity=%.2f", equity)
+        else:
+            logger.debug("Published runtime state — equity unavailable")
         return state
 
     def publish_cycle(
@@ -187,14 +298,24 @@ class StatePublisher:
             "sharpe": sharpe,
         }
         state["last_cycle"] = last_cycle
+        state["phase_blocked_symbols"] = _phase_blocked_symbols(phase)
         if instruments:
-            _merge_instruments(state, instruments)
+            _merge_instruments(state, instruments, last_cycle=last_cycle)
 
-        equity = float(account.get("equity", 1_000_000))
+        equity_raw = account.get("equity")
+        equity: float | None = None
+        if equity_raw is not None:
+            try:
+                parsed = float(equity_raw)
+                if parsed > 0:
+                    equity = parsed
+            except (TypeError, ValueError):
+                equity = None
         append_equity_point(state, equity, now.isoformat())
         write_state(state, self.state_path)
         _notify_listeners(state)
-        logger.debug("Published runtime state — equity=%.2f tier=%s", equity, risk.get("dd_tier"))
+        if equity is not None:
+            logger.debug("Published runtime state — equity=%.2f tier=%s", equity, risk.get("dd_tier"))
         return state
 
     def publish_risk_event(

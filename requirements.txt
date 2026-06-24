@@ -18,6 +18,7 @@ scipy>=1.11
 
 # MT5 development / MCP (optional — live trading uses ZeroMQ bridge)
 # pip install metatrader5-mcp MetaTrader5
+MetaTrader5>=5.0.45; sys_platform == "win32"
 
 # Development
 pytest>=7.4

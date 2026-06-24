@@ -42,6 +42,12 @@ function TradeRiskPreview({ check }: { check: TradeCheckResponse }) {
             {typeof check.projected.trade_notional === "number"
               ? `$${check.projected.trade_notional.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
               : "—"}
+            {check.projected.projected_net_directional_pct != null && (
+              <>
+                {" · net dir "}
+                {(Number(check.projected.projected_net_directional_pct) * 100).toFixed(0)}%
+              </>
+            )}
           </span>
         )}
       </div>

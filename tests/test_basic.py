@@ -38,10 +38,11 @@ def sample_ohlcv() -> pd.DataFrame:
 
 
 def test_config_loads():
-    config = QuantAIConfig.load(phase="round1")
+    config = QuantAIConfig.load(phase="round1", auto_phase=False)
     assert config.current_phase == "round1"
     assert len(config.active_symbols) == 15
-    assert config.phase_multiplier == 1.2
+    assert config.phase_multiplier == 1.35
+    assert config.phase_rules.get("min_agent_confidence") == 0.40
 
 
 def test_feature_engine(sample_ohlcv):
@@ -113,13 +114,25 @@ def test_session_filter_windows():
     assert sf.should_trade_symbol("EUR/USD", datetime(2026, 6, 21, 10, 0, tzinfo=timezone.utc))
 
 
+def test_session_filter_crypto_trades_during_closed_hours():
+    from datetime import datetime, timezone
+
+    sf = SessionFilter()
+    closed_ts = datetime(2026, 6, 21, 21, 30, tzinfo=timezone.utc)
+    assert sf.session_name(closed_ts) == "closed"
+    assert sf.should_trade_symbol("BTC/USD", closed_ts)
+    assert sf.should_trade_symbol("ETH/USD", closed_ts)
+    assert not sf.should_trade_symbol("EUR/USD", closed_ts)
+    assert not sf.should_trade_symbol("XAU/USD", closed_ts)
+
+
 def test_zeromq_connector_simulation():
     conn = ZeroMQConnector()
     assert not conn.is_connected
     result = conn.send_trade("EUR/USD", "BUY", 0.1)
     assert result["status"] == "simulated"
     account = conn.get_account_info()
-    assert account["equity"] == 1_000_000
+    assert account["status"] == "error"
 
 
 def test_zeromq_connect_requires_ea_or_fails():
@@ -150,7 +163,7 @@ def test_drawdown_guard_tiers():
         "normal_max": 0.05,
         "elevated_max": 0.10,
         "warning_max": 0.12,
-        "critical_max": 0.12,
+        "critical_max": 0.14,
         "emergency_close": 0.15,
         "size_multipliers": {
             "normal": 1.0, "elevated": 0.75, "warning": 0.5,
@@ -163,7 +176,12 @@ def test_drawdown_guard_tiers():
     assert state.size_multiplier == 0.75
 
     guard.reset(1_000_000)
-    critical = guard.update(870_000)
+    warning = guard.update(880_000)
+    assert warning.tier == "warning"
+    assert warning.size_multiplier == 0.5
+
+    guard.reset(1_000_000)
+    critical = guard.update(860_000)
     assert critical.tier == "critical"
     assert critical.size_multiplier == 0.25
 
@@ -239,14 +257,62 @@ def test_compliance_heartbeat():
     hb = ComplianceHeartbeat()
     actions = hb.check({"margin_usage_pct": 0.95, "effective_leverage": 10, "concentration_pct": 0.3})
     assert isinstance(actions, list)
+    # Penalties apply once per violation tier
+    hb.check({"margin_usage_pct": 0.95, "effective_leverage": 10, "concentration_pct": 0.3})
+    assert hb.state.risk_discipline_score == 100
+
+
+def test_compliance_leverage_penalties():
+    hb = ComplianceHeartbeat()
+    hb._violation_start["leverage_28"] = 0
+    hb.check({"margin_usage_pct": 0.1, "effective_leverage": 29, "concentration_pct": 0.1, "net_directional_pct": 0.5})
+    assert hb.state.risk_discipline_score == 80
+    hb._violation_start["leverage_29"] = 0
+    hb.check({"margin_usage_pct": 0.1, "effective_leverage": 29.5, "concentration_pct": 0.1, "net_directional_pct": 0.5})
+    assert hb.state.risk_discipline_score == 50
+
+
+def test_net_directional_ratio():
+    from src.risk.portfolio_heat import PortfolioHeat
+
+    positions = [
+        {"symbol": "EUR/USD", "type": "BUY", "volume": 1.0, "price_open": 100.0},
+        {"symbol": "GBP/USD", "type": "BUY", "volume": 0.5, "price_open": 100.0},
+    ]
+    assert PortfolioHeat.net_directional_ratio(positions) == 1.0
+    mixed = positions + [{"symbol": "USD/JPY", "type": "SELL", "volume": 1.0, "price_open": 100.0}]
+    assert PortfolioHeat.net_directional_ratio(mixed) < 1.0
+
+    fx_positions = [
+        {"symbol": "EUR/USD", "type": "BUY", "volume": 1.0, "price_open": 1.10},
+        {"symbol": "GBP/USD", "type": "BUY", "volume": 0.5, "price_open": 1.25},
+    ]
+    fx_ratio = PortfolioHeat.net_directional_ratio(fx_positions, lambda _s: 100_000.0)
+    assert fx_ratio == 1.0
 
 
 def test_sharpe_guard():
+    from datetime import datetime, timedelta, timezone
+
     guard = SharpeGuard(snapshot_interval_minutes=0)
     guard.record_equity(1_000_000)
     guard.record_equity(990_000)
+    guard.record_equity(980_000)
     assert guard.snapshot_count() >= 1
     assert guard.current_drawdown(950_000) > 0
+
+    positions = [{
+        "ticket": 1,
+        "symbol": "EUR/USD",
+        "type": "BUY",
+        "volume": 1.0,
+        "price_open": 1.10,
+        "profit": -500.0,
+    }]
+    guard._last_snapshot = datetime.now(timezone.utc) - timedelta(minutes=10)
+    guard._peak_equity = 1_000_000
+    tickets = guard.evaluate(positions, 950_000, lambda _p: -0.01)
+    assert 1 in tickets
 
 
 def test_trading_engine_single_cycle():
@@ -255,6 +321,52 @@ def test_trading_engine_single_cycle():
     engine = TradingEngine(config=config, simulation=True)
     engine.start()
     engine.run_cycle()
+
+
+def test_drawdown_guard_default_thresholds() -> None:
+    guard = DrawdownGuard({})
+    guard.reset(1_000_000)
+    assert guard.update(880_000).tier == "warning"
+    guard.reset(1_000_000)
+    assert guard.update(860_000).tier == "critical"
+
+
+def test_executable_price_sizing_uses_ask_and_spread_buffer() -> None:
+    from unittest.mock import MagicMock
+
+    from src.data.live_feed import TickSnapshot
+    from src.engine.trading_engine import TradingEngine
+
+    config = QuantAIConfig.load(phase="round1")
+    engine = TradingEngine(config=config, simulation=True)
+    engine._get_symbol_info = MagicMock(  # type: ignore[method-assign]
+        return_value={
+            "contract_size": 100_000.0,
+            "volume_min": 0.01,
+            "volume_step": 0.01,
+            "volume_max": 100.0,
+            "digits": 5,
+            "point": 0.00001,
+            "stops_level": 10,
+        },
+    )
+    from datetime import datetime, timezone
+
+    tick = TickSnapshot(
+        symbol="EUR/USD",
+        bid=1.0998,
+        ask=1.1002,
+        mid=1.1000,
+        spread=0.0004,
+        updated_at=datetime.now(timezone.utc),
+    )
+    engine.live_feed.get_tick = MagicMock(return_value=tick)  # type: ignore[method-assign]
+
+    close_entry = 1.1000
+    sl = 1.0980
+    lots_close = engine._risk_to_lots("EUR/USD", 1000.0, close_entry, sl, "BUY")
+    lots_exec = engine._risk_to_lots("EUR/USD", 1000.0, tick.ask, sl, "BUY")
+    assert lots_exec <= lots_close
 
 
 def test_sanitize_stops_buy_tp_below_entry():

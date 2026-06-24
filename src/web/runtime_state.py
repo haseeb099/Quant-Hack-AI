@@ -31,12 +31,13 @@ def default_state() -> dict[str, Any]:
         "mt5_connected": False,
         "zmq_last_error": None,
         "account": {
-            "equity": 1_000_000,
-            "balance": 1_000_000,
+            "equity": None,
+            "balance": None,
             "margin": 0,
-            "free_margin": 1_000_000,
+            "free_margin": None,
             "gross_exposure": 0,
-            "initial_equity": 1_000_000,
+            "initial_equity": None,
+            "equity_available": False,
         },
         "positions": [],
         "risk": {
@@ -52,10 +53,11 @@ def default_state() -> dict[str, Any]:
         },
         "last_cycle": {
             "symbols_processed": 0,
+            "symbols_attempted": 0,
             "decisions": [],
             "agent_votes": [],
         },
-        "equity_history": [{"t": now, "equity": 1_000_000}],
+        "equity_history": [],
         "instruments": {},
         "market": {
             "last_tick_at": None,
@@ -70,8 +72,9 @@ def read_state(path: Path | str | None = None) -> dict[str, Any]:
     if not p.exists():
         return default_state()
     try:
-        with open(p, encoding="utf-8") as f:
-            data = json.load(f)
+        with _lock:
+            with open(p, encoding="utf-8") as f:
+                data = json.load(f)
         base = default_state()
         base.update(data)
         return base
@@ -108,11 +111,19 @@ def write_state(state: dict[str, Any], path: Path | str = STATE_PATH) -> None:
 
 def append_equity_point(
     state: dict[str, Any],
-    equity: float,
+    equity: float | None,
     timestamp: str | None = None,
 ) -> dict[str, Any]:
+    if equity is None or equity <= 0:
+        return state
     ts = timestamp or datetime.now(timezone.utc).isoformat()
     history = state.setdefault("equity_history", [])
+    if history:
+        last = history[-1].get("equity")
+        if last and last > 0:
+            ratio = equity / float(last)
+            if ratio > 100 or ratio < 0.01:
+                return state
     history.append({"t": ts, "equity": equity})
     if len(history) > MAX_EQUITY_HISTORY:
         state["equity_history"] = history[-MAX_EQUITY_HISTORY:]

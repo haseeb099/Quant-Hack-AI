@@ -6,26 +6,35 @@ intelligence:
   cache_dir: data/intelligence
 
   calendar:
-    source: fixture  # fixture | cache | forex_factory
+    source: fixture  # fixture | cache | jblanked | rapidapi_forex_factory
     tier_1_window_minutes: 30
+    tier_1_post_window_minutes: 8
     tier_2_window_minutes: 15
     tier_2_size_multiplier: 0.5
-    tier_2_min_confidence: 0.80
+    tier_2_min_confidence: 0.85
+    rapidapi_days_ahead: 1
 
   news:
-    source: fixture  # fixture | newsapi | rss
+    source: fixture  # fixture | newsapi | jblanked | rapidapi_yahoo
     max_headlines_per_symbol: 20
-    lookback_hours: 4
+    lookback_hours: 24
     newsapi_base_url: https://newsapi.org/v2/everything
+    jblanked_base_url: https://www.jblanked.com/news/api
+    jblanked_source: mql5  # mql5 | forex-factory | fxstreet
+    jblanked_mode: calendar  # calendar (today's events) | list (event catalog)
+    rapidapi_yahoo_region: US
+    rapidapi_yahoo_snippet_count: 500
 
   sentiment:
     min_headlines: 3
+    min_headlines_with_macro: 1
     llm_enabled: true
     lexicon_fallback: true
 
   macro:
     fear_greed_enabled: true
     fear_greed_url: https://api.alternative.me/fng/
+    rapidapi_cash_flow_enabled: true
 
 event_impact_tiers:
   tier_1:
@@ -46,21 +55,21 @@ event_impact_tiers:
     - Housing Starts
 
 symbol_queries:
-  BTC/USD: [bitcoin, BTC, crypto regulation]
-  ETH/USD: [ethereum, ETH, crypto]
-  SOL/USD: [solana, SOL, crypto]
-  XRP/USD: [ripple, XRP, crypto]
-  BAR/USD: [crypto, altcoin]
-  XAU/USD: [gold price, XAU, safe haven, Fed]
-  XAG/USD: [silver price, XAG, precious metals]
-  EUR/USD: [euro, ECB, EURUSD]
-  GBP/USD: [pound sterling, BOE, GBPUSD]
-  USD/JPY: [yen, BOJ, USDJPY]
-  AUD/USD: [australian dollar, RBA, AUDUSD]
-  USD/CAD: [canadian dollar, BOC, USDCAD]
-  USD/CHF: [swiss franc, SNB, USDCHF]
-  EUR/GBP: [euro pound, EURGBP]
-  EUR/CHF: [euro franc, EURCHF]
+  BTC/USD: [bitcoin, BTC, crypto, cryptocurrency, ETF, blockchain]
+  ETH/USD: [ethereum, ETH, crypto, DeFi, cryptocurrency]
+  SOL/USD: [solana, SOL, crypto, altcoin, cryptocurrency]
+  XRP/USD: [ripple, XRP, crypto, cryptocurrency, SEC]
+  BAR/USD: [crypto, altcoin, cryptocurrency, token]
+  XAU/USD: [gold, XAU, safe haven, Fed, bullion, precious metals]
+  XAG/USD: [silver, XAG, precious metals, gold, bullion]
+  EUR/USD: [euro, ECB, EURUSD, dollar, Fed, forex, EUR]
+  GBP/USD: [pound, sterling, BOE, GBPUSD, dollar, Fed, forex, GBP]
+  USD/JPY: [yen, BOJ, USDJPY, dollar, Fed, forex, JPY]
+  AUD/USD: [australian dollar, RBA, AUDUSD, dollar, Fed, forex, AUD]
+  USD/CAD: [canadian dollar, BOC, USDCAD, dollar, Fed, forex, CAD, oil]
+  USD/CHF: [swiss franc, SNB, USDCHF, dollar, Fed, forex, CHF]
+  EUR/GBP: [euro, pound, EURGBP, forex, ECB, BOE]
+  EUR/CHF: [euro, franc, EURCHF, forex, ECB, SNB]
 
 currency_symbols:
   USD: [BTC/USD, ETH/USD, SOL/USD, XRP/USD, BAR/USD, XAU/USD, XAG/USD, USD/JPY, AUD/USD, USD/CAD, USD/CHF]

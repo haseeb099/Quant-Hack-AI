@@ -8,6 +8,7 @@ from src.copilot.context import CopilotContextBuilder, resolve_symbol_from_messa
 from src.copilot.memory_context import MemoryContextBuilder
 from src.copilot.models import AgentVoteSummary, DataCitation, SymbolAnalysisResponse
 from src.copilot.provider import enhance_summary_with_llm
+from src.utils.llm_providers import copilot_llm_enabled
 from src.risk.pre_trade_gate import TradeCheckRequest, get_pre_trade_gate
 from src.utils.logger import instrument_span
 from src.web.runtime_state import read_state
@@ -28,7 +29,7 @@ class CopilotAnalyzer:
         volume: float = 0.01,
         direction: str = "BUY",
         state: dict[str, Any] | None = None,
-        use_llm: bool = True,
+        use_llm: bool = False,
     ) -> SymbolAnalysisResponse:
         state = state or read_state()
         context, citations, refusal = self.context_builder.build(symbol, state)
@@ -162,11 +163,12 @@ class CopilotAnalyzer:
         self,
         message: str,
         symbol: str | None = None,
+        use_llm: bool | None = None,
         state: dict[str, Any] | None = None,
-        use_llm: bool = True,
     ) -> tuple[str, SymbolAnalysisResponse | None]:
         """Route chat message — returns (reply text, optional symbol analysis)."""
         state = state or read_state()
+        effective_use_llm = copilot_llm_enabled() if use_llm is None else use_llm
         resolved = resolve_symbol_from_message(message, symbol)
 
         if not resolved:
@@ -197,14 +199,18 @@ class CopilotAnalyzer:
                 ), None
 
             reply = (
-                f"Account equity ${float(account.get('equity', 0)):,.2f} · "
+                f"Account equity ${float(account.get('equity') or 0):,.2f} · "
                 f"drawdown tier {risk.get('dd_tier', 'normal')} · "
                 f"discipline {risk.get('discipline', 100)}. "
                 "Mention a symbol (e.g. XAU/USD or Gold) for full analysis."
             )
             return reply, None
 
-        analysis = self.analyze_symbol(resolved, state=state, use_llm=use_llm)
+        analysis = self.analyze_symbol(
+            resolved,
+            state=state,
+            use_llm=effective_use_llm,
+        )
         return analysis.summary, analysis
 
     @staticmethod

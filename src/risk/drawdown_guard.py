@@ -49,7 +49,7 @@ class DrawdownGuard:
     def _classify(self, drawdown: float) -> str:
         thresholds = self.config
         emergency = thresholds.get("emergency_close", 0.15)
-        critical = thresholds.get("critical_max", 0.12)
+        critical = thresholds.get("critical_max", 0.14)
         warning = thresholds.get("warning_max", 0.12)
         elevated = thresholds.get("elevated_max", 0.10)
         normal = thresholds.get("normal_max", 0.05)

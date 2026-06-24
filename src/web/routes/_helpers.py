@@ -50,8 +50,18 @@ def is_state_stale(state: dict[str, Any], max_age_sec: float = 60.0) -> bool:
 def compute_competition_score(state: dict[str, Any]) -> dict[str, Any]:
     account = state.get("account", {})
     risk = state.get("risk", {})
-    equity = float(account.get("equity", 1_000_000))
-    initial = float(account.get("initial_equity", 1_000_000))
+    equity_raw = account.get("equity")
+    initial_raw = account.get("initial_equity")
+    equity = float(equity_raw) if equity_raw is not None else 0.0
+    # Round-local baseline: phase-reset value or official $1M platform baseline.
+    if initial_raw is not None:
+        initial = float(initial_raw)
+    elif equity > 0:
+        initial = equity
+    else:
+        initial = 1_000_000.0
+    if initial <= 0:
+        initial = 1_000_000.0
     return_pct = ((equity - initial) / initial * 100) if initial else 0.0
     drawdown_pct = float(risk.get("drawdown_pct", 0))
     sharpe = float(risk.get("sharpe", 0))
@@ -88,4 +98,7 @@ def compute_competition_score(state: dict[str, Any]) -> dict[str, Any]:
         "total": round(total, 2),
         "components": components,
         "weights": COMPETITION_WEIGHTS,
+        "initial_equity": initial,
+        "return_pct": round(return_pct, 4),
+        "note": "Rank percentiles require external leaderboard API",
     }

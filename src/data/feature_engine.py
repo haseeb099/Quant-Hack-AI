@@ -70,6 +70,19 @@ def _percentile_rank(series: pd.Series, window: int = 100) -> pd.Series:
     )
 
 
+def _count_consecutive_squeeze_bars(bb_width_pct: pd.Series, threshold: float = 5.0) -> int:
+    """Count consecutive bars at end with BB width percentile at or below threshold."""
+    if len(bb_width_pct) == 0:
+        return 0
+    count = 0
+    for val in reversed(bb_width_pct.tolist()):
+        if float(val) <= threshold:
+            count += 1
+        else:
+            break
+    return count
+
+
 class FeatureEngine:
     """Compute multi-indicator feature vectors from OHLCV data."""
 
@@ -94,7 +107,13 @@ class FeatureEngine:
         )
         return out.reset_index(drop=True)
 
-    def compute(self, symbol: str, timeframe: str, ohlcv: pd.DataFrame) -> FeatureVector:
+    def compute(
+        self,
+        symbol: str,
+        timeframe: str,
+        ohlcv: pd.DataFrame,
+        donchian_period: int = 20,
+    ) -> FeatureVector:
         df = ohlcv.copy()
         for col in ("open", "high", "low", "close", "volume"):
             if col in df.columns:
@@ -121,14 +140,16 @@ class FeatureEngine:
         bb_width = (bb_upper - bb_lower) / bb_mid.replace(0, np.nan)
         bb_width_pct = _percentile_rank(bb_width.fillna(0))
 
-        donchian_high = high.rolling(20).max()
-        donchian_low = low.rolling(20).min()
+        donchian_high = high.rolling(donchian_period).max()
+        donchian_low = low.rolling(donchian_period).min()
 
         vol_avg = volume.rolling(20).mean()
         volume_ratio = (volume / vol_avg.replace(0, np.nan)).fillna(1.0)
 
         macd_line, macd_signal, macd_hist = _macd(close)
         atr_pct = _percentile_rank(atr_14_s.fillna(0))
+        squeeze_threshold = 5.0
+        bb_squeeze_bars = _count_consecutive_squeeze_bars(bb_width_pct.fillna(50.0), squeeze_threshold)
 
         atr_14 = float(atr_14_s.iloc[-1]) if len(atr_14_s) else 0.0
         atr_50 = float(atr_50_s.iloc[-1]) if len(atr_50_s) else atr_14
@@ -167,6 +188,11 @@ class FeatureEngine:
                 "macd_line": float(macd_line.iloc[-1]),
                 "macd_signal": float(macd_signal.iloc[-1]),
                 "macd_histogram_prev": float(macd_hist.iloc[-2]) if len(macd_hist) > 1 else 0.0,
+                "bb_squeeze_bars": bb_squeeze_bars,
+                "donchian_high_prev": float(donchian_high.iloc[-2]) if len(donchian_high) > 1 else float(donchian_high.iloc[-1]),
+                "donchian_low_prev": float(donchian_low.iloc[-2]) if len(donchian_low) > 1 else float(donchian_low.iloc[-1]),
+                "rsi_prev": float(rsi_14_s.iloc[-2]) if len(rsi_14_s) > 1 else rsi_14,
+                "volume_prev_ratio": float(volume_ratio.iloc[-2]) if len(volume_ratio) > 1 else float(volume_ratio.iloc[-1]),
             },
         )
 
@@ -175,15 +201,16 @@ class FeatureEngine:
         symbol: str,
         m15_ohlcv: pd.DataFrame,
         donchian_period: int = 20,
+        h1_ohlcv: pd.DataFrame | None = None,
+        h4_ohlcv: pd.DataFrame | None = None,
     ) -> dict[str, FeatureVector]:
-        _ = donchian_period  # used when computing donchian extras in engine
         out: dict[str, FeatureVector] = {}
-        out["M15"] = self.compute(symbol, "M15", m15_ohlcv)
-        h1 = self.resample_ohlcv(m15_ohlcv, TIMEFRAME_FACTORS["H1"])
-        h4 = self.resample_ohlcv(m15_ohlcv, TIMEFRAME_FACTORS["H4"])
-        min_bars = 20
+        out["M15"] = self.compute(symbol, "M15", m15_ohlcv, donchian_period=donchian_period)
+        h1 = h1_ohlcv if h1_ohlcv is not None else self.resample_ohlcv(m15_ohlcv, TIMEFRAME_FACTORS["H1"])
+        h4 = h4_ohlcv if h4_ohlcv is not None else self.resample_ohlcv(m15_ohlcv, TIMEFRAME_FACTORS["H4"])
+        min_bars = max(donchian_period, 20)
         if len(h1) >= min_bars:
-            out["H1"] = self.compute(symbol, "H1", h1)
+            out["H1"] = self.compute(symbol, "H1", h1, donchian_period=donchian_period)
         if len(h4) >= min_bars:
-            out["H4"] = self.compute(symbol, "H4", h4)
+            out["H4"] = self.compute(symbol, "H4", h4, donchian_period=donchian_period)
         return out

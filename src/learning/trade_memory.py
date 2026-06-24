@@ -92,7 +92,7 @@ class TradeMemory:
 
         r_values = [r[0] for r in rows if r[0] is not None]
         if not r_values:
-            return {"win_rate": 0.5, "avg_r": 0.0, "sample_size": 0}
+            return {"win_rate": None, "avg_r": 0.0, "sample_size": 0}
 
         wins = sum(1 for r in r_values if r > 0)
         return {

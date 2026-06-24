@@ -25,6 +25,7 @@ export interface StatusResponse {
   last_tick_at?: string | null;
   last_tick_age_ms?: number | null;
   account_profile?: string | null;
+  blocked_symbols?: string[];
 }
 
 export interface CompetitionScoreResponse {
@@ -70,7 +71,15 @@ export interface AdaptationPlan {
   old_weights: Record<string, number>;
   new_weights: Record<string, number>;
   weight_deltas?: Record<string, number>;
+  parameter_overrides?: Record<string, Record<string, number>>;
+  regime_boost_overrides?: Record<string, Record<string, number>>;
   promoted: boolean;
+  blocked_reason?: string | null;
+  agent_health_status?: string;
+  agent_audit_summary?: {
+    trade_count?: number;
+    recommendations?: number;
+  };
   walk_forward?: {
     oos_return?: number;
     oos_sharpe?: number;
@@ -78,6 +87,7 @@ export interface AdaptationPlan {
     baseline_sharpe?: number;
     sharpe_delta?: number;
     historical_file?: string | null;
+    symbol_count?: number;
   };
   semantic_keys?: number;
   trade_count?: number;
@@ -142,6 +152,60 @@ export interface OperatorRunbookResponse {
   preflight: PreflightResponse;
   launch_readiness: boolean;
   phases: OperatorRunbookPhase[];
+}
+
+export type OperatorSnapshotStatus = "GREEN" | "YELLOW" | "RED" | "UNKNOWN";
+
+export interface OperatorIssue {
+  code: string;
+  label: string;
+  severity: string;
+  passed: boolean;
+  detail: string;
+  remediation?: string;
+}
+
+export interface OperatorSnapshot {
+  timestamp: string;
+  status: OperatorSnapshotStatus;
+  dashboard_url?: string;
+  reconciliation?: {
+    status: OperatorSnapshotStatus;
+    issues: OperatorIssue[];
+    summary?: Record<string, unknown>;
+  };
+  risk_compliance?: {
+    status: OperatorSnapshotStatus;
+    issues: OperatorIssue[];
+  };
+  mt5_checks?: {
+    passed: number;
+    total: number;
+    ready: boolean;
+    checks: PreflightCheck[];
+  };
+  mt5_log?: {
+    available: boolean;
+    error_count: number;
+    status: string;
+    detail?: string;
+  };
+  summary?: Record<string, unknown>;
+}
+
+export interface OperatorSnapshotResponse {
+  available: boolean;
+  snapshot: OperatorSnapshot | null;
+}
+
+export interface OperatorSnapshotHistoryResponse {
+  count: number;
+  history: OperatorSnapshot[];
+}
+
+export interface OperatorWatchdogTriggerResponse {
+  ok: boolean;
+  snapshot: OperatorSnapshot;
 }
 
 export interface NorthflankService {
@@ -297,6 +361,7 @@ export interface EngineHealthResponse {
   drawdown_pct?: number;
   discipline?: number;
   account_profile?: string | null;
+  risk_events?: RiskEvent[];
 }
 
 export interface AgentAttribution {
@@ -356,12 +421,16 @@ export class TradeBlockedError extends Error {
 
 export interface AccountResponse {
   equity: number;
-  balance: number;
+  balance: number | null;
   margin: number;
-  free_margin: number;
+  free_margin: number | null;
   gross_exposure: number;
-  daily_pnl?: number;
+  daily_pnl?: number | null;
   return_pct?: number;
+  account_stale?: boolean;
+  equity_available?: boolean;
+  initial_equity?: number;
+  margin_level?: number | null;
 }
 
 export interface Position {
@@ -374,6 +443,8 @@ export interface Position {
   tp: number | null;
   unrealized_pnl: number;
   opened_at: string;
+  notional?: number;
+  contract_size?: number;
 }
 
 export interface PositionsResponse {
@@ -418,9 +489,60 @@ export interface TradesResponse {
 
 export interface AgentStats {
   agent: string;
-  win_rate: number;
+  win_rate: number | null;
   avg_r: number;
   samples: number;
+}
+
+export interface AgentHealthAgentReport {
+  active: boolean;
+  symbols_firing?: number;
+  symbols_tested?: number;
+  fixture_fired?: boolean;
+  issue?: string | null;
+}
+
+export interface AgentHealthResponse {
+  status: "GREEN" | "YELLOW" | "RED" | string;
+  timestamp?: string;
+  agents: Record<string, AgentHealthAgentReport>;
+  red_agents?: string[];
+  error?: string;
+}
+
+export interface AgentAuditRecommendation {
+  agent: string;
+  regime: string;
+  sample_size: number;
+  win_rate: number;
+  recommendation: string;
+  severity: string;
+}
+
+export interface AgentAuditAgentMetrics {
+  agent: string;
+  sample_size: number;
+  win_rate: number | null;
+  avg_r: number;
+  by_regime?: Record<string, { sample_size: number; win_rate: number | null; avg_r: number }>;
+  attribution?: { win_rate: number | null; avg_r: number; sample_size: number };
+}
+
+export interface AgentAuditResponse {
+  timestamp?: string;
+  trade_count: number;
+  semantic_keys?: number;
+  agents: Record<string, AgentAuditAgentMetrics>;
+  recommendations: AgentAuditRecommendation[];
+  skip_reasons?: Record<string, number>;
+  error?: string;
+}
+
+export interface AgentTunedConfigResponse {
+  exists: boolean;
+  path: string;
+  yaml: string | null;
+  plan: AdaptationPlan | null;
 }
 
 export interface CycleDecision {
@@ -435,8 +557,10 @@ export interface CycleDecision {
 
 export interface LastCycleResponse {
   symbols_processed: number;
+  symbols_attempted: number;
   decisions: CycleDecision[];
   agent_votes: AgentVote[];
+  skip_summary?: Record<string, number>;
 }
 
 export interface RiskViolation {
@@ -450,6 +574,32 @@ export interface MarginState {
   margin_pct: number;
   leverage: number;
   concentration_pct: number;
+  margin_level_pct?: number | null;
+  net_directional_pct?: number;
+  action?: string;
+}
+
+export interface RiskTiers {
+  normal_max: number;
+  elevated_max: number;
+  warning_max: number;
+  critical_max: number;
+  emergency_close: number;
+}
+
+export interface RiskCaps {
+  margin_emergency_pct: number;
+  leverage_max: number;
+  concentration_max_pct: number;
+  net_directional_cap: number;
+  stop_out_level_pct: number;
+}
+
+export interface RiskEvent {
+  timestamp: string;
+  type: string;
+  severity: string;
+  message: string;
 }
 
 export interface RiskResponse {
@@ -460,6 +610,9 @@ export interface RiskResponse {
   margin_state: MarginState;
   violations?: RiskViolation[];
   compliance_score?: number;
+  tiers?: RiskTiers;
+  caps?: RiskCaps;
+  events?: RiskEvent[];
 }
 
 export type MarketHealth = "green" | "amber" | "red";
@@ -625,27 +778,191 @@ function directionToVote(direction: string): AgentVote["vote"] {
 }
 
 function mapAgentVotes(raw: Array<Record<string, unknown>> | undefined): AgentVote[] {
-  return (raw ?? []).map((v) => ({
-    agent: String(v.agent ?? ""),
-    symbol: v.symbol ? String(v.symbol) : undefined,
-    vote: directionToVote(String(v.direction ?? v.vote ?? "hold")),
-    confidence: Number(v.confidence ?? 0),
-    reasoning: v.reasoning ? String(v.reasoning) : undefined,
-  }));
+  const flat: AgentVote[] = [];
+  for (const item of raw ?? []) {
+    const nested = item.votes;
+    if (Array.isArray(nested)) {
+      const symbol = item.symbol ? String(item.symbol) : undefined;
+      for (const vote of nested) {
+        const v = vote as Record<string, unknown>;
+        flat.push({
+          agent: String(v.agent ?? ""),
+          symbol,
+          vote: directionToVote(String(v.direction ?? v.vote ?? "hold")),
+          confidence: Number(v.confidence ?? 0),
+          reasoning: v.reasoning ? String(v.reasoning) : undefined,
+        });
+      }
+      continue;
+    }
+    flat.push({
+      agent: String(item.agent ?? ""),
+      symbol: item.symbol ? String(item.symbol) : undefined,
+      vote: directionToVote(String(item.direction ?? item.vote ?? "hold")),
+      confidence: Number(item.confidence ?? 0),
+      reasoning: item.reasoning ? String(item.reasoning) : undefined,
+    });
+  }
+  return flat;
+}
+
+export function mapRiskViolations(
+  raw: unknown,
+  fallbackEvents?: Array<Record<string, unknown>>,
+): RiskViolation[] {
+  const source =
+    Array.isArray(raw) && raw.length > 0 ? raw : (fallbackEvents ?? []);
+  return source.map((item) => {
+    if (typeof item === "string") {
+      return {
+        timestamp: "",
+        type: item,
+        severity: "warning",
+        message: item.replace(/_/g, " "),
+      };
+    }
+    const e = item as Record<string, unknown>;
+    return {
+      timestamp: String(e.timestamp ?? ""),
+      type: String(e.type ?? e.code ?? ""),
+      severity: String(e.severity ?? "warning"),
+      message: String(e.message ?? e.type ?? ""),
+    };
+  });
+}
+
+export function mapLastCycleResponse(raw: {
+  symbols_processed?: number;
+  symbols_attempted?: number;
+  decisions?: Array<Record<string, unknown>>;
+  agent_votes?: Array<Record<string, unknown>>;
+  skip_summary?: Record<string, number>;
+}): LastCycleResponse {
+  return {
+    symbols_processed: Number(raw.symbols_processed ?? 0),
+    symbols_attempted: Number(raw.symbols_attempted ?? raw.symbols_processed ?? 0),
+    agent_votes: mapAgentVotes(raw.agent_votes),
+    skip_summary: raw.skip_summary,
+    decisions: (raw.decisions ?? []).map((d) => ({
+      symbol: String(d.symbol ?? ""),
+      action: String(d.direction ?? d.action ?? "HOLD"),
+      executed:
+        d.status === "executed" || d.status === "simulated" || Boolean(d.executed),
+      reason: String(d.skip_reason ?? d.reason ?? d.reasoning ?? ""),
+      features_summary: d.features
+        ? `ADX ${(d.features as Record<string, number>).adx?.toFixed?.(1)} · RSI ${(d.features as Record<string, number>).rsi_14?.toFixed?.(1)}`
+        : undefined,
+      orchestrator_output: d.reasoning ? String(d.reasoning) : undefined,
+      agent_votes: mapAgentVotes(d.agent_votes as Array<Record<string, unknown>>),
+    })),
+  };
+}
+
+export function positionNotional(raw: Record<string, unknown> | Position): number {
+  if ("notional" in raw && raw.notional != null) {
+    return Math.abs(Number(raw.notional));
+  }
+  const size = Number("size" in raw ? raw.size : raw.volume ?? 0);
+  const entry = Number("entry" in raw ? raw.entry : raw.price_open ?? 0);
+  const contract = Number(
+    "contract_size" in raw ? raw.contract_size : raw.contract_size ?? 1,
+  );
+  return Math.abs(size * contract * entry);
 }
 
 function mapPosition(raw: Record<string, unknown>): Position {
   const dir = String(raw.type ?? raw.direction ?? "BUY").toUpperCase();
+  const size = Number(raw.volume ?? raw.size ?? 0);
+  const entry = Number(raw.price_open ?? raw.entry ?? 0);
+  const contractSize =
+    raw.contract_size != null ? Number(raw.contract_size) : undefined;
+  const notional =
+    raw.notional != null ? Math.abs(Number(raw.notional)) : positionNotional(raw);
   return {
     id: String(raw.ticket ?? raw.id ?? ""),
     symbol: String(raw.symbol ?? ""),
     direction: dir.includes("SELL") ? "short" : "long",
-    size: Number(raw.volume ?? raw.size ?? 0),
-    entry: Number(raw.price_open ?? raw.entry ?? 0),
+    size,
+    entry,
     sl: raw.sl != null ? Number(raw.sl) : null,
     tp: raw.tp != null ? Number(raw.tp) : null,
     unrealized_pnl: Number(raw.profit ?? raw.unrealized_pnl ?? 0),
     opened_at: String(raw.time ?? raw.opened_at ?? ""),
+    notional,
+    contract_size: contractSize,
+  };
+}
+
+function mapRiskTiers(raw: unknown): RiskTiers | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const t = raw as Record<string, unknown>;
+  return {
+    normal_max: Number(t.normal_max ?? 0.05),
+    elevated_max: Number(t.elevated_max ?? 0.1),
+    warning_max: Number(t.warning_max ?? 0.12),
+    critical_max: Number(t.critical_max ?? 0.14),
+    emergency_close: Number(t.emergency_close ?? 0.15),
+  };
+}
+
+function mapRiskCaps(raw: unknown): RiskCaps | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const c = raw as Record<string, unknown>;
+  return {
+    margin_emergency_pct: Number(c.margin_emergency_pct ?? 0.88),
+    leverage_max: Number(c.leverage_max ?? 20),
+    concentration_max_pct: Number(c.concentration_max_pct ?? 0.4),
+    net_directional_cap: Number(c.net_directional_cap ?? 0.85),
+    stop_out_level_pct: Number(c.stop_out_level_pct ?? 30),
+  };
+}
+
+function mapRiskEvents(raw: unknown): RiskEvent[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item) => {
+    const e = item as Record<string, unknown>;
+    return {
+      timestamp: String(e.timestamp ?? ""),
+      type: String(e.type ?? e.code ?? ""),
+      severity: String(e.severity ?? "warning"),
+      message: String(e.message ?? e.type ?? ""),
+    };
+  });
+}
+
+export function mapRiskResponse(raw: Record<string, unknown>): RiskResponse {
+  const margin = raw.margin as Record<string, unknown> | undefined;
+  const events = mapRiskEvents(raw.events);
+  return {
+    dd_tier: (raw.dd_tier as DrawdownTier) ?? "normal",
+    drawdown_pct: Number(raw.drawdown_pct ?? 0) * 100,
+    sharpe: Number(raw.sharpe ?? 0),
+    discipline: Number(raw.discipline ?? 100),
+    compliance_score: Number(raw.compliance_score ?? raw.discipline ?? 100),
+    margin_state: {
+      margin_pct: Number(margin?.margin_usage_pct ?? raw.margin_usage_pct ?? 0) * 100,
+      leverage: Number(margin?.effective_leverage ?? raw.effective_leverage ?? 0),
+      concentration_pct:
+        Number(margin?.concentration_pct ?? raw.concentration_pct ?? 0) * 100,
+      margin_level_pct:
+        margin?.margin_level_pct != null
+          ? Number(margin.margin_level_pct)
+          : raw.margin_level_pct != null
+            ? Number(raw.margin_level_pct)
+            : null,
+      net_directional_pct:
+        Number(margin?.net_directional_pct ?? raw.net_directional_pct ?? 0) * 100,
+      action: String(
+        margin?.action ?? raw.margin_state ?? raw.margin_action ?? "",
+      ) || undefined,
+    },
+    violations: mapRiskViolations(
+      raw.violations,
+      raw.events as Array<Record<string, unknown>> | undefined,
+    ),
+    tiers: mapRiskTiers(raw.tiers),
+    caps: mapRiskCaps(raw.caps),
+    events,
   };
 }
 
@@ -730,7 +1047,7 @@ export const api = {
     const raw = await fetchJson<{ agents: Array<Record<string, unknown>> }>("/agents");
     return raw.agents.map((a) => ({
       agent: String(a.agent ?? ""),
-      win_rate: Number(a.win_rate ?? 0),
+      win_rate: a.win_rate == null ? null : Number(a.win_rate),
       avg_r: Number(a.avg_r ?? 0),
       samples: Number(a.sample_size ?? a.samples ?? 0),
     }));
@@ -742,44 +1059,12 @@ export const api = {
       decisions: Array<Record<string, unknown>>;
       agent_votes: Array<Record<string, unknown>>;
     }>("/agents/last-cycle");
-    return {
-      symbols_processed: raw.symbols_processed,
-      agent_votes: mapAgentVotes(raw.agent_votes),
-      decisions: (raw.decisions ?? []).map((d) => ({
-        symbol: String(d.symbol ?? ""),
-        action: String(d.direction ?? d.action ?? "HOLD"),
-        executed: d.status === "executed" || d.status === "simulated" || Boolean(d.executed),
-        reason: String(d.skip_reason ?? d.reason ?? d.reasoning ?? ""),
-        features_summary: d.features
-          ? `ADX ${(d.features as Record<string, number>).adx?.toFixed?.(1)} · RSI ${(d.features as Record<string, number>).rsi_14?.toFixed?.(1)}`
-          : undefined,
-        orchestrator_output: d.reasoning ? String(d.reasoning) : undefined,
-        agent_votes: mapAgentVotes(d.agent_votes as Array<Record<string, unknown>>),
-      })),
-    };
+    return mapLastCycleResponse(raw);
   },
 
   getRisk: async (): Promise<RiskResponse> => {
     const raw = await fetchJson<Record<string, unknown>>("/risk");
-    const events = (raw.events as Array<Record<string, unknown>> | undefined) ?? [];
-    return {
-      dd_tier: (raw.dd_tier as DrawdownTier) ?? "normal",
-      drawdown_pct: Number(raw.drawdown_pct ?? 0),
-      sharpe: Number(raw.sharpe ?? 0),
-      discipline: Number(raw.discipline ?? 100),
-      compliance_score: Number(raw.discipline ?? 100),
-      margin_state: {
-        margin_pct: Number(raw.margin_usage_pct ?? 0) * 100,
-        leverage: Number(raw.effective_leverage ?? 0),
-        concentration_pct: Number(raw.concentration_pct ?? 0) * 100,
-      },
-      violations: events.map((e) => ({
-        timestamp: String(e.timestamp ?? ""),
-        type: String(e.type ?? ""),
-        severity: String(e.severity ?? ""),
-        message: String(e.message ?? ""),
-      })),
-    };
+    return mapRiskResponse(raw);
   },
 
   getInstruments: async (): Promise<InstrumentsResponse> => {
@@ -817,6 +1102,17 @@ export const api = {
       `/operator/preflight?zmq_only=${zmqOnly}&with_cycle=${withCycle}`,
     ),
 
+  getOperatorSnapshot: () =>
+    fetchJson<OperatorSnapshotResponse>("/operator/snapshot"),
+
+  getOperatorSnapshotHistory: (limit = 50) =>
+    fetchJson<OperatorSnapshotHistoryResponse>(
+      `/operator/snapshot/history?limit=${limit}`,
+    ),
+
+  triggerOperatorWatchdog: (body: { confirm: boolean; zmq_only?: boolean }) =>
+    postJson<OperatorWatchdogTriggerResponse>("/operator/watchdog/trigger", body),
+
   getNorthflankDeploy: () => fetchJson<NorthflankDeployResponse>("/deploy/northflank"),
 
   getDemoWalkthrough: () => fetchJson<DemoWalkthroughResponse>("/demo/walkthrough"),
@@ -834,6 +1130,12 @@ export const api = {
     fetchJson<{ attribution: AgentAttribution[]; total_closed_trades: number }>(
       "/agents/attribution",
     ),
+
+  getAgentHealth: () => fetchJson<AgentHealthResponse>("/agents/health"),
+
+  getAgentAudit: () => fetchJson<AgentAuditResponse>("/agents/audit"),
+
+  getAgentTunedConfig: () => fetchJson<AgentTunedConfigResponse>("/agents/tuned-config"),
 
   getControlState: () => fetchJson<ControlStateResponse>("/control/state"),
 
@@ -923,6 +1225,7 @@ export const api = {
   getIntelligenceSnapshot: () =>
     fetchJson<{
       enabled: boolean;
+      refresh_ok?: boolean;
       macro?: { bias: string; usd_strength: string; fear_greed?: number; notes?: string };
       upcoming_events?: Array<{
         name: string;
@@ -966,12 +1269,17 @@ export const queryKeys = {
   notionStatus: ["notionStatus"] as const,
   notionTasks: ["notionTasks"] as const,
   operatorRunbook: ["operatorRunbook"] as const,
+  operatorSnapshot: ["operatorSnapshot"] as const,
+  operatorSnapshotHistory: ["operatorSnapshotHistory"] as const,
   demoWalkthrough: ["demoWalkthrough"] as const,
   technologyPrize: ["technologyPrize"] as const,
   operatorVerification: ["operatorVerification"] as const,
   northflankDeploy: ["northflankDeploy"] as const,
   engineHealth: ["engineHealth"] as const,
   agentAttribution: ["agentAttribution"] as const,
+  agentHealth: ["agentHealth"] as const,
+  agentAudit: ["agentAudit"] as const,
+  agentTunedConfig: ["agentTunedConfig"] as const,
   controlState: ["controlState"] as const,
   tradeCheck: (params: {
     symbol: string;
@@ -987,9 +1295,23 @@ export const DRAWDOWN_TIERS: { tier: DrawdownTier; label: string; maxPct: number
   { tier: "normal", label: "Normal", maxPct: 5 },
   { tier: "elevated", label: "Elevated", maxPct: 10 },
   { tier: "warning", label: "Warning", maxPct: 12 },
-  { tier: "critical", label: "Critical", maxPct: 15 },
+  { tier: "critical", label: "Critical", maxPct: 14 },
   { tier: "emergency", label: "Emergency", maxPct: 15 },
 ];
+
+export function resolveDrawdownTiers(
+  risk?: RiskResponse,
+): { tier: DrawdownTier; label: string; maxPct: number }[] {
+  if (!risk?.tiers) return DRAWDOWN_TIERS;
+  const t = risk.tiers;
+  return [
+    { tier: "normal", label: "Normal", maxPct: t.normal_max * 100 },
+    { tier: "elevated", label: "Elevated", maxPct: t.elevated_max * 100 },
+    { tier: "warning", label: "Warning", maxPct: t.warning_max * 100 },
+    { tier: "critical", label: "Critical", maxPct: t.critical_max * 100 },
+    { tier: "emergency", label: "Emergency", maxPct: t.emergency_close * 100 },
+  ];
+}
 
 export const COMPETITION_WEIGHTS = {
   return: 0.7,
@@ -1002,4 +1324,17 @@ export const RISK_CAPS = {
   margin: 88,
   leverage: 20,
   concentration: 40,
+  netDirectional: 85,
+  stopOut: 30,
 };
+
+export function resolveRiskCaps(risk?: RiskResponse) {
+  if (!risk?.caps) return RISK_CAPS;
+  return {
+    margin: risk.caps.margin_emergency_pct * 100,
+    leverage: risk.caps.leverage_max,
+    concentration: risk.caps.concentration_max_pct * 100,
+    netDirectional: risk.caps.net_directional_cap * 100,
+    stopOut: risk.caps.stop_out_level_pct,
+  };
+}

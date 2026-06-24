@@ -9,9 +9,13 @@ from typing import Any
 
 from src.integrations.notion_az_content import (
     AZ_SECTIONS,
+    COMPETITION_COMPLIANCE,
     GUIDE_TITLE,
     IMPLEMENTATION_STEPS,
     INSTRUMENTS_TABLE,
+    OPEN_POSITION_MONITORING,
+    PROJECT_STRUCTURE,
+    TRADE_LIFECYCLE,
 )
 from src.integrations.notion_sync import NotionSync, get_notion_sync, record_sync_result
 
@@ -115,6 +119,22 @@ def _build_guide_blocks() -> list[dict[str, Any]]:
         _heading_block("Competition Instruments", 2),
     ]
     for chunk in _chunks(INSTRUMENTS_TABLE):
+        blocks.append(_paragraph_block(chunk))
+    blocks.append(_divider_block())
+    blocks.append(_heading_block("Project Structure", 2))
+    for chunk in _chunks(PROJECT_STRUCTURE):
+        blocks.append(_paragraph_block(chunk))
+    blocks.append(_divider_block())
+    blocks.append(_heading_block("Trade Lifecycle — Open & Close", 2))
+    for chunk in _chunks(TRADE_LIFECYCLE):
+        blocks.append(_paragraph_block(chunk))
+    blocks.append(_divider_block())
+    blocks.append(_heading_block("Open Position Monitoring", 2))
+    for chunk in _chunks(OPEN_POSITION_MONITORING):
+        blocks.append(_paragraph_block(chunk))
+    blocks.append(_divider_block())
+    blocks.append(_heading_block("Competition Compliance (Wired)", 2))
+    for chunk in _chunks(COMPETITION_COMPLIANCE):
         blocks.append(_paragraph_block(chunk))
     blocks.append(_divider_block())
     blocks.append(_heading_block("A–Z Reference", 2))

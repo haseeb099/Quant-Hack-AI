@@ -7,16 +7,26 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from src.integrations.notion_az_content import AZ_SECTIONS, IMPLEMENTATION_STEPS
+from src.integrations.notion_az_content import (
+    AZ_SECTIONS,
+    COMPETITION_COMPLIANCE,
+    IMPLEMENTATION_STEPS,
+    OPEN_POSITION_MONITORING,
+    TRADE_LIFECYCLE,
+)
 from src.integrations.notion_az_sync import sync_az_to_notion, upsert_implementation_step
 from src.web.app import create_app
 
 
 def test_az_content_complete():
-    assert len(IMPLEMENTATION_STEPS) == 10
+    assert len(IMPLEMENTATION_STEPS) == 11
     assert len(AZ_SECTIONS) == 26
     letters = {s["letter"] for s in AZ_SECTIONS}
     assert letters == set("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    assert "pre_trade_gate" in TRADE_LIFECYCLE
+    assert "PositionManager" in OPEN_POSITION_MONITORING
+    assert "ComplianceHeartbeat" in COMPETITION_COMPLIANCE
+    assert "QUANTAI_PHASE=auto" in AZ_SECTIONS[4]["body"]  # letter E
 
 
 def test_sync_az_disabled():

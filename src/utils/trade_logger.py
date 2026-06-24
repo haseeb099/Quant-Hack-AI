@@ -78,9 +78,11 @@ class TradeLogger:
                 elif isinstance(v, dict):
                     votes_summary.append(v)
 
+        from src.engine.trade_journal import display_symbol
+
         record: dict[str, Any] = {
             "timestamp": now,
-            "symbol": symbol,
+            "symbol": display_symbol(symbol),
             "regime": regime,
             "session": session,
             "agent_votes": votes_summary,

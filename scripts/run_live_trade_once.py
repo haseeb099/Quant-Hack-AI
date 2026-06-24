@@ -32,6 +32,8 @@ def main() -> int:
         return 1
     time.sleep(1.5)
     engine._init_mt5_session()
+    engine.live_feed.start()
+    time.sleep(3.0)  # collect ticks before market health checks
 
     account = engine.connector.get_account_info()
     equity = account.get("equity", 1.0)
@@ -52,7 +54,11 @@ def main() -> int:
         "our_rank": 55,
     })
 
-    candidates = ["SOL/USD", "ETH/USD", "BTC/USD", "EUR/CHF"]
+    candidates = [
+        "SOL/USD", "XRP/USD", "BTC/USD", "ETH/USD", "XAU/USD",
+        "EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CHF",
+        "EUR/CHF", "USD/CAD", "EUR/GBP", "XAG/USD", "BAR/USD",
+    ]
     for symbol in candidates:
         m15 = engine._get_ohlcv(symbol, "M15")
         if m15 is None or len(m15) < 50:

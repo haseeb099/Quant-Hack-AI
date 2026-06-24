@@ -13,11 +13,13 @@ class MarginState:
     concentration_pct: float
     action: str
     message: str
+    margin_level_pct: float = 100.0
     block_new_trades: bool = False
     size_multiplier: float = 1.0
     leverage_haircut: float = 1.0
     close_worst_loser: bool = False
     reduce_positions_pct: float = 0.0
+    stop_out_risk: bool = False
 
 
 class MarginMonitor:
@@ -47,18 +49,25 @@ class MarginMonitor:
         used_margin: float,
         gross_exposure: float,
         largest_position_pct: float,
+        margin_level_pct: float | None = None,
     ) -> MarginState:
         margin_pct = used_margin / (equity + 1e-9)
         leverage = gross_exposure / (equity + 1e-9)
+        if margin_level_pct is None:
+            margin_level_pct = (equity / used_margin * 100.0) if used_margin > 0 else 999.0
         actions: list[str] = []
         block = False
         size_mult = 1.0
         leverage_haircut = 1.0
         close_worst = False
         reduce_pct = 0.0
+        stop_out_risk = False
 
         emergency_pct = self.margin_cfg.get("emergency_pct", 0.88)
         action_pct = self.margin_cfg.get("action_pct", 0.80)
+        stop_out_level = self.margin_cfg.get("stop_out_level_pct", 30)
+        stop_out_warn = self.margin_cfg.get("stop_out_warn_pct", 50)
+        stop_out_emergency = self.margin_cfg.get("stop_out_emergency_pct", 40)
         lev_max = self.leverage_cfg.get("max", 20)
         lev_warning = self.leverage_cfg.get("warning", 15)
         lev_hard = self.leverage_cfg.get("hard_stop", 25)
@@ -77,6 +86,18 @@ class MarginMonitor:
             elif daily_loss >= daily_limit * 0.75:
                 size_mult = min(size_mult, 0.25)
                 actions.append("Daily loss approaching limit — reduce size 75%")
+
+        if margin_level_pct <= stop_out_emergency:
+            stop_out_risk = True
+            actions.append(f"STOP-OUT RISK: margin level {margin_level_pct:.0f}% — emergency reduce")
+            block = True
+            close_worst = True
+            reduce_pct = max(reduce_pct, 0.5)
+        elif margin_level_pct <= stop_out_warn:
+            stop_out_risk = True
+            actions.append(f"Margin level {margin_level_pct:.0f}% approaching stop-out ({stop_out_level}%)")
+            block = True
+            size_mult = min(size_mult, 0.25)
 
         if margin_pct >= emergency_pct:
             actions.append("EMERGENCY: block entries + close worst loser")
@@ -114,18 +135,20 @@ class MarginMonitor:
             concentration_pct=largest_position_pct,
             action=action,
             message="; ".join(actions) if actions else "All metrics within limits",
+            margin_level_pct=margin_level_pct,
             block_new_trades=block or self._daily_loss_halt,
             size_multiplier=size_mult,
             leverage_haircut=leverage_haircut,
             close_worst_loser=close_worst,
             reduce_positions_pct=reduce_pct,
+            stop_out_risk=stop_out_risk,
         )
 
     @property
     def daily_loss_halt(self) -> bool:
         return self._daily_loss_halt
 
-    def concentration_blocks_symbol(self, symbol: str, concentration_pct: float) -> bool:
-        """Block new trades in same symbol when concentration exceeds max cap."""
+    def concentration_blocks_entries(self, concentration_pct: float) -> bool:
+        """Block new entries when portfolio largest-position concentration exceeds cap."""
         max_pct = self.conc_cfg.get("max_pct", 0.40)
         return concentration_pct >= max_pct

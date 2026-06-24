@@ -44,7 +44,7 @@ class SentimentAgent(BaseTradingAgent):
                 reasoning=f"Event gate blocked: {event_gate.get('reason', '')}",
             )
 
-        if headline_count < 3 or confidence < min_conf:
+        if headline_count < 2 or confidence < min_conf:
             return AgentSignal(
                 agent_name=self.name,
                 symbol=features.symbol,
@@ -63,8 +63,8 @@ class SentimentAgent(BaseTradingAgent):
             direction = Direction.BUY
             reasoning = f"Bullish sentiment {score:.2f}: {reasoning}"
             if macro_bias == "risk_off" and is_crypto:
-                confidence *= 0.7
-                reasoning += "; macro risk-off penalizes crypto long"
+                confidence *= 0.72
+                reasoning += "; macro risk-off strongly penalizes crypto long"
             if macro_bias == "risk_off" and is_metal:
                 confidence = min(confidence * 1.1, max_conf)
                 reasoning += "; safe-haven boost for metals"

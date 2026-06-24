@@ -6,66 +6,51 @@ import type {
   LastCycleResponse,
   PositionsResponse,
   Position,
-  RiskResponse,
   RuntimeStatePayload,
   StatusResponse,
   TicksPayload,
   MarketAlertPayload,
   WSMessage,
 } from "@/lib/api";
-import { queryKeys } from "@/lib/api";
+import { mapLastCycleResponse, mapRiskResponse, positionNotional, queryKeys } from "@/lib/api";
 
 function getWsUrl(): string {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const base = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws/live`;
   const token = import.meta.env.VITE_DASHBOARD_AUTH_TOKEN as string | undefined;
-  const base = `${protocol}//${window.location.host}/ws/live`;
   if (token?.trim()) {
     return `${base}?token=${encodeURIComponent(token.trim())}`;
   }
   return base;
 }
 
-function mapRiskPayload(raw: Record<string, unknown>): RiskResponse {
-  const margin = raw.margin as Record<string, unknown> | undefined;
-  const events = (raw.events as Array<Record<string, unknown>> | undefined) ?? [];
-  return {
-    dd_tier: (raw.dd_tier as RiskResponse["dd_tier"]) ?? "normal",
-    drawdown_pct: Number(raw.drawdown_pct ?? 0),
-    sharpe: Number(raw.sharpe ?? 0),
-    discipline: Number(raw.discipline ?? 100),
-    compliance_score: Number(raw.discipline ?? 100),
-    margin_state: {
-      margin_pct: Number(
-        margin?.margin_usage_pct ?? raw.margin_usage_pct ?? 0,
-      ) * 100,
-      leverage: Number(
-        margin?.effective_leverage ?? raw.effective_leverage ?? 0,
-      ),
-      concentration_pct: Number(
-        margin?.concentration_pct ?? raw.concentration_pct ?? 0,
-      ) * 100,
-    },
-    violations: events.map((e) => ({
-      timestamp: String(e.timestamp ?? ""),
-      type: String(e.type ?? ""),
-      severity: String(e.severity ?? ""),
-      message: String(e.message ?? ""),
-    })),
-  };
+function getWsProtocols(): string[] | undefined {
+  const token = import.meta.env.VITE_DASHBOARD_AUTH_TOKEN as string | undefined;
+  if (!token?.trim()) {
+    return undefined;
+  }
+  return ["quantai-dashboard", token.trim()];
 }
 
 function mapPosition(raw: Record<string, unknown>): Position {
   const dir = String(raw.type ?? raw.direction ?? "BUY").toUpperCase();
+  const size = Number(raw.volume ?? raw.size ?? 0);
+  const entry = Number(raw.price_open ?? raw.entry ?? 0);
+  const contractSize =
+    raw.contract_size != null ? Number(raw.contract_size) : undefined;
+  const notional =
+    raw.notional != null ? Math.abs(Number(raw.notional)) : positionNotional(raw);
   return {
     id: String(raw.ticket ?? raw.id ?? ""),
     symbol: String(raw.symbol ?? ""),
     direction: dir.includes("SELL") ? "short" : "long",
-    size: Number(raw.volume ?? raw.size ?? 0),
-    entry: Number(raw.price_open ?? raw.entry ?? 0),
+    size,
+    entry,
     sl: raw.sl != null ? Number(raw.sl) : null,
     tp: raw.tp != null ? Number(raw.tp) : null,
     unrealized_pnl: Number(raw.profit ?? raw.unrealized_pnl ?? 0),
     opened_at: String(raw.time ?? raw.opened_at ?? ""),
+    notional,
+    contract_size: contractSize,
   };
 }
 
@@ -95,10 +80,19 @@ function applyStatePayload(
   if (payload.account) {
     const equity = Number(payload.account.equity ?? 0);
     const initial = Number(payload.account.initial_equity ?? equity);
+    const balanceRaw = payload.account.balance;
+    const balance =
+      balanceRaw != null && !Number.isNaN(Number(balanceRaw))
+        ? Number(balanceRaw)
+        : null;
+    const accountStale = Boolean(payload.account.account_stale);
+    const equityAvailable = payload.account.equity_available !== false && !accountStale;
     queryClient.setQueryData(queryKeys.account, {
       ...payload.account,
-      return_pct: initial ? ((equity - initial) / initial) * 100 : 0,
-      daily_pnl: equity - Number(payload.account.balance ?? equity),
+      return_pct:
+        initial && equityAvailable ? ((equity - initial) / initial) * 100 : 0,
+      daily_pnl:
+        balance != null && equityAvailable ? equity - balance : null,
     });
   }
 
@@ -108,7 +102,7 @@ function applyStatePayload(
     );
     const totalPnl = positions.reduce((sum, p) => sum + p.unrealized_pnl, 0);
     const totalExposure = positions.reduce(
-      (sum, p) => sum + Math.abs(p.size * p.entry),
+      (sum, p) => sum + (p.notional ?? positionNotional(p)),
       0,
     );
     queryClient.setQueryData<PositionsResponse>(queryKeys.positions, {
@@ -121,7 +115,7 @@ function applyStatePayload(
   if (payload.risk) {
     queryClient.setQueryData(
       queryKeys.risk,
-      mapRiskPayload(payload.risk as Record<string, unknown>),
+      mapRiskResponse(payload.risk as Record<string, unknown>),
     );
   }
 
@@ -134,7 +128,13 @@ function applyStatePayload(
   if (payload.last_cycle) {
     queryClient.setQueryData<LastCycleResponse>(
       queryKeys.lastCycle,
-      payload.last_cycle,
+      mapLastCycleResponse(
+        payload.last_cycle as unknown as {
+          symbols_processed?: number;
+          decisions?: Array<Record<string, unknown>>;
+          agent_votes?: Array<Record<string, unknown>>;
+        },
+      ),
     );
   }
 
@@ -244,7 +244,7 @@ export function useLiveWebSocket() {
     function connect() {
       if (!mounted) return;
 
-      const ws = new WebSocket(getWsUrl());
+      const ws = new WebSocket(getWsUrl(), getWsProtocols());
       wsRef.current = ws;
 
       ws.onopen = () => {

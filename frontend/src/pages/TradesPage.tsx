@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Fragment, useState } from "react";
+import { PageHeader } from "@/components/shared/PageHeader";
 import { AgentVoteBar } from "@/components/shared/AgentVoteBar";
 import { TradeDetailSheet } from "@/components/shared/TradeDetailSheet";
 import { Badge } from "@/components/ui/badge";
@@ -25,7 +26,7 @@ import {
 
 export function TradesPage() {
   const [symbolFilter, setSymbolFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("executed");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [selectedTrade, setSelectedTrade] = useState<Trade | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -58,12 +59,10 @@ export function TradesPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-xl font-semibold">Trade Journal</h1>
-        <p className="text-sm text-muted-foreground">
-          Full history with agent votes and orchestrator reasoning
-        </p>
-      </div>
+      <PageHeader
+        title="Trade Journal"
+        description="Full history with agent votes, regime context, and orchestrator reasoning."
+      />
 
       <div className="flex flex-wrap gap-3">
         <Input
@@ -83,6 +82,23 @@ export function TradesPage() {
           <option value="decision">Decision</option>
           <option value="error">Error</option>
         </select>
+        <div className="flex flex-wrap gap-2">
+          {[
+            { label: "Executed", value: "executed" },
+            { label: "Executed + Sim", value: "executed,simulated" },
+            { label: "All", value: "" },
+          ].map((chip) => (
+            <Button
+              key={chip.value || "all"}
+              type="button"
+              size="sm"
+              variant={statusFilter === chip.value ? "secondary" : "outline"}
+              onClick={() => setStatusFilter(chip.value)}
+            >
+              {chip.label}
+            </Button>
+          ))}
+        </div>
       </div>
 
       <Card className="bg-panel border-border/60">

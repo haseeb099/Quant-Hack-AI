@@ -7,10 +7,20 @@ from typing import Any
 
 from src.data.market_validator import MarketValidator
 from src.engine.config import QuantAIConfig, load_yaml
+from src.bridges.zeromq_connector import account_equity
 from src.risk.drawdown_guard import DrawdownGuard
 from src.risk.margin_monitor import MarginMonitor
+from src.risk.account_profile import position_notional
 from src.risk.portfolio_heat import CRYPTO_SYMBOLS, PortfolioHeat
-from src.web.runtime_state import is_state_stale
+
+CONTRACT_SIZE_DEFAULTS: dict[str, float] = {
+    "BTC/USD": 1.0,
+    "ETH/USD": 1.0,
+    "EUR/USD": 100_000.0,
+    "GBP/USD": 100_000.0,
+    "USD/JPY": 100_000.0,
+    "XAU/USD": 100.0,
+}
 
 ALLOWED_SYMBOLS: set[str] | None = None
 
@@ -35,6 +45,7 @@ class TradeCheckRequest:
     sl: float | None = None
     tp: float | None = None
     price: float | None = None
+    atr_14: float | None = None
 
 
 @dataclass
@@ -77,8 +88,26 @@ class PreTradeRiskGate:
             risk.get("concentration", {}),
             risk.get("drawdown", {}),
         )
-        self.portfolio_heat = PortfolioHeat({"reference_equity": 1_000_000})
+        self.portfolio_heat = PortfolioHeat(self._portfolio_heat_config(1_000_000))
         self.market_validator = MarketValidator()
+
+    def _portfolio_heat_config(self, equity: float) -> dict[str, Any]:
+        risk = self.config.risk
+        net_dir = risk.get("net_directional", {})
+        phase_rules = self.config.phase_rules
+        return {
+            "reference_equity": equity,
+            "correlation_threshold": float(risk.get("sizing", {}).get("correlation_threshold", 0.70)),
+            "correlation_pairs": risk.get("correlation_pairs", []),
+            "cluster_cap": float(risk.get("concentration", {}).get("max_pct", 0.40)),
+            "net_directional_cap": float(net_dir.get("internal_cap", 0.85)),
+            "net_directional_min_gross_pct": float(
+                phase_rules.get(
+                    "net_directional_enforce_min_gross_pct",
+                    net_dir.get("enforce_min_gross_pct", 0.08),
+                )
+            ),
+        }
 
     def evaluate_from_state(
         self,
@@ -115,10 +144,38 @@ class PreTradeRiskGate:
         risk = state.get("risk", {})
         positions = state.get("positions", [])
         mode = str(state.get("mode", "simulate"))
-        equity = float(account.get("equity", 1_000_000))
+        equity_val = account_equity(account, simulation=(mode != "live"))
+        if mode == "live" and equity_val is None:
+            blockers.append(
+                RiskBlocker(
+                    "BRIDGE_OFFLINE",
+                    "critical",
+                    "Account equity unavailable — ZMQ bridge offline or error",
+                ),
+            )
+            remediation.append("Reconnect MT5 bridge from the control bar")
+            return self._finalize(blockers, warnings, remediation, state, request, 0.0)
+        raw_equity = account.get("equity")
+        if equity_val is not None:
+            equity = equity_val
+        elif raw_equity is not None:
+            equity = float(raw_equity)
+        elif mode != "live":
+            equity = 1_000_000.0
+        else:
+            equity = 0.0
         used_margin = float(account.get("margin", 0))
         gross_exposure = float(account.get("gross_exposure", 0))
         trade_notional = self._estimate_notional(symbol, volume, state, request.price)
+
+        def _contract_size(sym: str) -> float:
+            inst = state.get("instruments", {}).get(sym, {})
+            cs = inst.get("contract_size")
+            if cs:
+                return float(cs)
+            return CONTRACT_SIZE_DEFAULTS.get(sym, 100.0)
+
+        get_contract_size = _contract_size
 
         if state.get("engine_paused"):
             blockers.append(
@@ -129,6 +186,8 @@ class PreTradeRiskGate:
                 ),
             )
             remediation.append("Resume the engine from the control bar")
+
+        from src.web.runtime_state import is_state_stale
 
         if is_state_stale(state):
             blockers.append(
@@ -150,16 +209,39 @@ class PreTradeRiskGate:
             )
             remediation.append("Reconnect MT5 bridge from the control bar")
 
+        max_spread_atr = self.config.risk.get("sizing", {}).get("max_spread_atr_ratio")
+        if (
+            mode == "live"
+            and max_spread_atr
+            and request.atr_14
+            and request.atr_14 > 0
+        ):
+            inst = state.get("instruments", {}).get(symbol, {})
+            bid = inst.get("bid")
+            ask = inst.get("ask")
+            if bid is not None and ask is not None:
+                spread = float(ask) - float(bid)
+                if spread > float(max_spread_atr) * request.atr_14:
+                    blockers.append(
+                        RiskBlocker(
+                            "WIDE_SPREAD",
+                            "critical",
+                            f"Spread {spread:.5f} exceeds {max_spread_atr:.2f}× ATR "
+                            f"({request.atr_14:.5f})",
+                        ),
+                    )
+                    remediation.append("Wait for tighter spread or skip entry")
+
         market = state.get("market", {})
         instruments = state.get("instruments", {})
         inst = instruments.get(symbol, {})
-        tick_age = inst.get("tick_age_ms") or market.get("last_tick_age_ms")
-        if mode == "live" and tick_age is not None and float(tick_age) > self.market_validator.max_tick_age_ms:
+        tick_age = inst.get("tick_age_ms") if inst.get("tick_age_ms") is not None else market.get("last_tick_age_ms")
+        if mode == "live" and (tick_age is None or float(tick_age) > self.market_validator.max_tick_age_ms):
             blockers.append(
                 RiskBlocker(
                     "STALE_TICKS",
                     "critical",
-                    f"Stale market data ({float(tick_age) / 1000:.1f}s since last tick)",
+                    f"Stale or missing market data ({(float(tick_age) / 1000 if tick_age is not None else 0):.1f}s since last tick)",
                 ),
             )
             remediation.append("Wait for fresh ticks or reconnect MT5")
@@ -230,8 +312,15 @@ class PreTradeRiskGate:
             )
             remediation.append("Close or modify the existing position first")
 
-        peak = equity / max(1.0 - drawdown_pct, 1e-9) if drawdown_pct < 1 else equity
-        self.drawdown_guard.peak_equity = max(peak, equity)
+        peak = self.drawdown_guard.peak_equity
+        if equity > 0 and peak > equity * 10:
+            implied_dd = (peak - equity) / peak
+            if implied_dd >= 0.50:
+                self.drawdown_guard.reset(equity)
+        elif equity > 0 and state.get("account_profile") == "micro":
+            bound = max(equity * 2, 1000)
+            if peak > bound:
+                self.drawdown_guard.reset(equity)
         dd_state = self.drawdown_guard.update(equity)
 
         margin_state = self.margin_monitor.check(
@@ -239,7 +328,76 @@ class PreTradeRiskGate:
             used_margin,
             gross_exposure,
             float(account.get("largest_position_pct", risk.get("concentration_pct", 0))),
+            margin_level_pct=account.get("margin_level"),
         )
+
+        net_directional_cap = self.config.risk.get("net_directional", {}).get("internal_cap", 0.85)
+        net_directional = PortfolioHeat.net_directional_ratio(positions, get_contract_size)
+        inst = state.get("instruments", {}).get(symbol, {})
+        contract_size = get_contract_size(symbol)
+        trade_price = request.price
+        if not trade_price or trade_price <= 0:
+            for key in ("mid", "bid", "ask"):
+                val = inst.get(key)
+                if val and float(val) > 0:
+                    trade_price = float(val)
+                    break
+        if not trade_price or trade_price <= 0:
+            trade_price = trade_notional / max(volume * contract_size, 1e-9)
+        projected_positions = list(positions) + [{
+            "symbol": symbol,
+            "type": direction,
+            "volume": volume,
+            "price_open": trade_price,
+            "contract_size": get_contract_size(symbol),
+        }]
+        projected_net = PortfolioHeat.net_directional_ratio(projected_positions, get_contract_size)
+
+        if margin_state.stop_out_risk:
+            blockers.append(
+                RiskBlocker(
+                    "STOP_OUT_RISK",
+                    "critical",
+                    f"Margin level {margin_state.margin_level_pct:.0f}% approaching 30% stop-out — entries blocked",
+                ),
+            )
+            remediation.append("Reduce exposure immediately to avoid forced liquidation")
+
+        net_penalty = self.config.risk.get("net_directional", {}).get("competition_penalty_pct", 0.95)
+        min_gross = float(
+            self.config.phase_rules.get(
+                "net_directional_enforce_min_gross_pct",
+                self.config.risk.get("net_directional", {}).get("enforce_min_gross_pct", 0.08),
+            )
+        )
+        projected_gross = gross_exposure + trade_notional
+        gross_pct = projected_gross / max(equity, 1e-9)
+        balancing_trade = projected_net < net_directional
+        if (
+            positions
+            and projected_net > net_directional_cap
+            and gross_pct >= min_gross
+            and not balancing_trade
+        ):
+            blockers.append(
+                RiskBlocker(
+                    "NET_DIRECTIONAL",
+                    "critical",
+                    f"Projected net directional exposure {projected_net:.0%} exceeds {net_directional_cap:.0%} cap",
+                    discipline_risk=-10,
+                ),
+            )
+            remediation.append("Balance long/short exposure before adding")
+        elif positions and projected_net > net_penalty and gross_pct >= min_gross:
+            warnings.append(
+                RiskBlocker(
+                    "NET_DIRECTIONAL",
+                    "warning",
+                    f"Projected net directional {projected_net:.0%} near competition penalty ({net_penalty:.0%})",
+                    discipline_risk=-10,
+                    penalty_in_min=30,
+                ),
+            )
 
         if margin_state.block_new_trades or "EMERGENCY" in margin_state.action.upper():
             blockers.append(
@@ -290,8 +448,11 @@ class PreTradeRiskGate:
             )
 
         conc_max = self.config.risk.get("concentration", {}).get("max_pct", 0.40)
-        if margin_state.concentration_pct >= conc_max or self.margin_monitor.concentration_blocks_symbol(
-            symbol, margin_state.concentration_pct,
+        trade_conc_pct = trade_notional / max(equity, 1e-9)
+        projected_conc_pct = max(margin_state.concentration_pct, trade_conc_pct)
+
+        if margin_state.concentration_pct >= conc_max or self.margin_monitor.concentration_blocks_entries(
+            margin_state.concentration_pct,
         ):
             blockers.append(
                 RiskBlocker(
@@ -302,8 +463,19 @@ class PreTradeRiskGate:
                 ),
             )
             remediation.append("Diversify — reduce largest position before adding")
+        elif projected_conc_pct > conc_max:
+            blockers.append(
+                RiskBlocker(
+                    "CONCENTRATION_PROJECTED",
+                    "critical",
+                    f"Projected concentration {projected_conc_pct:.0%} exceeds {conc_max:.0%} cap",
+                    discipline_risk=-10,
+                ),
+            )
+            remediation.append("Reduce trade size or diversify before adding")
 
-        self.portfolio_heat = PortfolioHeat(equity)
+        heat_cfg = self.config.risk
+        self.portfolio_heat = PortfolioHeat(self._portfolio_heat_config(equity))
         heat_ok, heat_reason = self.portfolio_heat.pre_trade_check(
             equity,
             positions,
@@ -312,6 +484,10 @@ class PreTradeRiskGate:
             direction,
             trade_notional,
             max_leverage=float(self.config.risk.get("leverage", {}).get("max", 20)),
+            volume=volume,
+            price=trade_price,
+            contract_size=get_contract_size(symbol),
+            get_contract_size=get_contract_size,
         )
         if not heat_ok:
             blockers.append(
@@ -338,6 +514,10 @@ class PreTradeRiskGate:
             "projected_leverage": round(projected_leverage, 2),
             "margin_usage_pct": round(margin_state.margin_usage_pct, 4),
             "concentration_pct": round(margin_state.concentration_pct, 4),
+            "projected_concentration_pct": round(projected_conc_pct, 4),
+            "net_directional_pct": round(net_directional, 4),
+            "projected_net_directional_pct": round(projected_net, 4),
+            "margin_level_pct": round(margin_state.margin_level_pct, 2),
             "dd_tier": dd_tier,
             "discipline": discipline,
         })
@@ -378,8 +558,10 @@ class PreTradeRiskGate:
             float(account.get("margin", 0)),
             float(account.get("gross_exposure", 0)),
             float(account.get("largest_position_pct", 0)),
+            margin_level_pct=account.get("margin_level"),
         )
         state["risk"]["concentration_pct"] = margin_state.concentration_pct
+        state["account"]["margin_level"] = account.get("margin_level")
 
         if hasattr(engine, "live_feed") and engine.live_feed:
             tick = engine.live_feed.get_tick(request.symbol)
@@ -387,8 +569,14 @@ class PreTradeRiskGate:
                 state["market"]["last_tick_age_ms"] = tick.tick_age_ms
                 state["instruments"][request.symbol] = {
                     "mid": tick.mid,
+                    "bid": tick.bid,
+                    "ask": tick.ask,
                     "tick_age_ms": tick.tick_age_ms,
                 }
+
+        specs = engine._get_symbol_specs(request.symbol) if hasattr(engine, "_get_symbol_specs") else None
+        if specs:
+            state.setdefault("instruments", {}).setdefault(request.symbol, {})["contract_size"] = specs["contract_size"]
 
         return self.evaluate_from_state(state, request)
 
@@ -399,19 +587,21 @@ class PreTradeRiskGate:
         state: dict[str, Any],
         price: float | None,
     ) -> float:
-        if price and price > 0:
-            return abs(volume * price)
         inst = state.get("instruments", {}).get(symbol, {})
+        contract_size = float(inst.get("contract_size", 0)) or CONTRACT_SIZE_DEFAULTS.get(symbol, 100.0)
+        if price and price > 0:
+            return position_notional(volume, contract_size, price)
         mid = inst.get("mid") or inst.get("bid") or inst.get("ask")
         if mid:
-            return abs(volume * float(mid))
+            return position_notional(volume, contract_size, float(mid))
         defaults = {
             "BTC/USD": 95_000.0,
             "ETH/USD": 3_500.0,
             "XAU/USD": 2_350.0,
             "EUR/USD": 1.08,
         }
-        return abs(volume * defaults.get(symbol, 100.0))
+        ref_price = defaults.get(symbol, 100.0)
+        return position_notional(volume, contract_size, ref_price)
 
     @staticmethod
     def _symbol_has_position(symbol: str, positions: list[dict[str, Any]]) -> bool:

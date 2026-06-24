@@ -13,7 +13,7 @@ from src.agents.breakout_hunter import BreakoutHunterAgent
 from src.agents.mean_reversion import MeanReversionAgent
 from src.agents.momentum_pulse import MomentumPulseAgent
 from src.agents.trend_surfer import TrendSurferAgent
-from src.data.feature_engine import FeatureEngine, TIMEFRAME_FACTORS
+from src.data.feature_engine import FeatureEngine, TIMEFRAME_FACTORS, _count_consecutive_squeeze_bars
 from src.data.regime_detector import RegimeDetector
 from src.data.session_filter import SessionFilter
 
@@ -113,6 +113,31 @@ class TestFeatureEngine:
         features = engine.compute("XAU/USD", "H1", trending_ohlcv)
         assert features.regime in Regime
 
+    def test_compute_includes_agent_extras(self, sample_ohlcv):
+        engine = FeatureEngine()
+        features = engine.compute("EUR/USD", "M15", sample_ohlcv)
+        for key in (
+            "bb_squeeze_bars",
+            "donchian_high_prev",
+            "donchian_low_prev",
+            "rsi_prev",
+            "volume_prev_ratio",
+        ):
+            assert key in features.extras
+        assert isinstance(features.extras["bb_squeeze_bars"], int)
+        assert features.extras["bb_squeeze_bars"] >= 0
+
+    def test_compute_multi_uses_native_h1_h4(self, sample_ohlcv):
+        engine = FeatureEngine()
+        h1 = FeatureEngine.resample_ohlcv(sample_ohlcv, TIMEFRAME_FACTORS["H1"])
+        h1["close"] = h1["close"] + 5.0
+        h4 = FeatureEngine.resample_ohlcv(sample_ohlcv, TIMEFRAME_FACTORS["H4"])
+        h4["close"] = h4["close"] + 10.0
+        multi = engine.compute_multi("EUR/USD", sample_ohlcv, h1_ohlcv=h1, h4_ohlcv=h4)
+        resampled = engine.compute_multi("EUR/USD", sample_ohlcv)
+        assert multi["H1"].close != resampled["H1"].close
+        assert multi["H4"].close != resampled["H4"].close
+
 
 class TestRegimeDetector:
     def test_volatile_regime(self):
@@ -141,13 +166,21 @@ class TestSessionFilter:
         ts = datetime(2026, 6, 21, 3, 0, tzinfo=timezone.utc)
         assert session_filter.session_name(ts) == "asia"
         assert session_filter.is_symbol_preferred("USD/JPY", ts)
-        assert session_filter.should_skip_symbol("BTC/USD", ts)
+        assert not session_filter.should_skip_symbol("BTC/USD", ts)
+        assert session_filter.should_skip_symbol("EUR/USD", ts)
 
     def test_london_session(self, session_filter):
         ts = datetime(2026, 6, 21, 10, 0, tzinfo=timezone.utc)
         assert session_filter.session_name(ts) == "london"
         assert session_filter.is_symbol_preferred("EUR/USD", ts)
-        assert session_filter.should_skip_symbol("BTC/USD", ts)
+        assert not session_filter.should_skip_symbol("BTC/USD", ts)
+        assert session_filter.should_skip_symbol("USD/JPY", ts)
+
+    def test_closed_session_crypto_only(self, session_filter):
+        ts = datetime(2026, 6, 21, 21, 30, tzinfo=timezone.utc)
+        assert session_filter.session_name(ts) == "closed"
+        assert not session_filter.should_skip_symbol("BTC/USD", ts)
+        assert session_filter.should_skip_symbol("EUR/USD", ts)
 
     def test_ny_session(self, session_filter):
         ts = datetime(2026, 6, 21, 18, 0, tzinfo=timezone.utc)
@@ -166,6 +199,20 @@ class TestSessionFilter:
         agents = session_filter.preferred_agents(ts)
         assert "breakout_hunter" in agents
         assert "momentum_pulse" in agents
+
+    def test_crypto_trades_during_closed_hours(self, session_filter):
+        closed_ts = datetime(2026, 6, 21, 21, 30, tzinfo=timezone.utc)
+        assert session_filter.session_name(closed_ts) == "closed"
+        assert not session_filter.should_skip_symbol("BTC/USD", closed_ts)
+        assert not session_filter.should_skip_symbol("SOL/USD", closed_ts)
+        assert session_filter.should_skip_symbol("EUR/USD", closed_ts)
+        assert session_filter.should_skip_symbol("XAU/USD", closed_ts)
+
+    def test_disabled_symbol_filter_trades_all_sessions(self):
+        session_filter = SessionFilter(symbol_filter_enabled=False)
+        asia_ts = datetime(2026, 6, 21, 3, 0, tzinfo=timezone.utc)
+        assert not session_filter.should_skip_symbol("EUR/USD", asia_ts)
+        assert session_filter.should_trade_symbol("EUR/USD", asia_ts)
 
 
 class TestAgents:
@@ -267,6 +314,49 @@ class TestAgents:
         signal = agent.analyze(features)
         assert signal.direction == Direction.BUY
         assert signal.confidence >= 0.70
+
+    def test_count_consecutive_squeeze_bars(self):
+        series = pd.Series([50.0, 50.0, 4.0, 3.0, 2.0, 4.0, 3.0, 3.0, 2.0, 1.0])
+        assert _count_consecutive_squeeze_bars(series, threshold=5.0) == 8
+
+    def test_breakout_hunter_with_engine_features(self, sample_ohlcv):
+        engine = FeatureEngine()
+        features = engine.compute("EUR/USD", "M15", sample_ohlcv)
+        assert "bb_squeeze_bars" in features.extras
+        assert features.extras["donchian_high_prev"] > 0
+        assert features.extras["donchian_low_prev"] > 0
+        assert features.extras["donchian_high_prev"] != features.donchian_high or len(sample_ohlcv) > 2
+        agent = BreakoutHunterAgent({})
+        signal = agent.analyze(features)
+        assert "bb_squeeze_bars" in features.extras
+        assert isinstance(features.extras["bb_squeeze_bars"], int)
+        assert signal.reasoning != "No breakout: requires BB squeeze + volume spike" or features.bb_width_percentile > 5
+
+    def test_mean_reversion_with_engine_features(self):
+        n = 320
+        price = np.full(n, 100.0)
+        price[-30:] = np.linspace(100.0, 97.5, 30)
+        volume = np.full(n, 800.0)
+        volume[-2] = 1200.0
+        volume[-1] = 400.0
+        ohlcv = pd.DataFrame(
+            {
+                "open": price,
+                "high": price + 0.2,
+                "low": price - 0.2,
+                "close": price,
+                "volume": volume,
+            }
+        )
+        engine = FeatureEngine()
+        features = engine.compute("EUR/USD", "M15", ohlcv)
+        assert "rsi_prev" in features.extras
+        assert "volume_prev_ratio" in features.extras
+        agent = MeanReversionAgent({})
+        signal = agent.analyze(features)
+        assert "Oversold but no RSI divergence or volume decline" not in signal.reasoning
+        if signal.direction == Direction.BUY:
+            assert signal.confidence >= 0.70
 
     def test_all_agents_produce_valid_signals(self, sample_ohlcv):
         engine = FeatureEngine()

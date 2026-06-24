@@ -6,6 +6,7 @@ from fastapi import APIRouter
 
 from src.engine.config import QuantAIConfig
 from src.intelligence.market_intelligence import MarketIntelligenceService
+from src.utils.logger import instrument_span
 from src.web.runtime_state import read_state
 
 router = APIRouter(tags=["intelligence"])
@@ -20,6 +21,7 @@ def _get_service() -> MarketIntelligenceService:
 
 
 @router.get("/api/intelligence/snapshot")
+@instrument_span("quantai.intelligence.snapshot")
 def get_intelligence_snapshot() -> dict:
     state = read_state()
     intel = state.get("intelligence")
@@ -34,6 +36,7 @@ def get_intelligence_snapshot() -> dict:
 
 
 @router.get("/api/intelligence/calendar")
+@instrument_span("quantai.intelligence.calendar")
 def get_calendar(hours: int = 8) -> dict:
     service = _get_service()
     service.calendar.refresh()
@@ -41,6 +44,7 @@ def get_calendar(hours: int = 8) -> dict:
 
 
 @router.get("/api/intelligence/sentiment")
+@instrument_span("quantai.intelligence.sentiment")
 def get_all_sentiment() -> dict:
     state = read_state()
     intel = state.get("intelligence", {})
@@ -52,6 +56,7 @@ def get_all_sentiment() -> dict:
 
 
 @router.get("/api/intelligence/sentiment/{symbol}")
+@instrument_span("quantai.intelligence.sentiment_symbol")
 def get_symbol_sentiment(symbol: str) -> dict:
     state = read_state()
     intel = state.get("intelligence", {})

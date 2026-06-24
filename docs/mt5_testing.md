@@ -46,6 +46,18 @@ MT5_PATH=C:\Program Files\MetaTrader 5\terminal64.exe
 
 Project config lives in `.cursor/mcp.json`. It launches `scripts/run_mt5_mcp.py`, which reads credentials from `.env`.
 
+First-time API setup (run once, with MT5 **closed**):
+
+```bash
+python scripts/enable_mt5_api.py
+```
+
+Then start MT5, log in manually, and verify:
+
+```bash
+python scripts/diagnose_mt5_mcp.py
+```
+
 **Important:** The MCP config uses an absolute `python.exe` path and project `cwd` so Cursor can find Python even when it overrides `PATH`. If MCP fails to start on your machine, update those paths in `.cursor/mcp.json` to match your Python install and project folder.
 
 After editing `.env` or MCP config:
@@ -118,14 +130,58 @@ Use this sequence the evening before launch:
 |---------|--------------|-----|
 | MCP server shows error in Cursor | `PATH` override in `.cursor/mcp.json` hides Python | Use full `python.exe` path and add Python to `PATH` in MCP config (see section 1) |
 | MCP server won't start | Missing `.env` credentials | Fill `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER` |
-| `initialize() failed` | MT5 not running | Launch terminal, enable Algorithmic Trading |
+| `initialize() failed` / Authorization failed | MT5 not running or Python API disabled (`Experts/Api=0`) | Run `python scripts/enable_mt5_api.py`, restart MT5, enable **Algorithmic Trading** |
+| MCP re-initializes with path+login | `metatrader5_mcp` reloads `.env` on startup | Fixed in `run_mt5_mcp.py`: attach first, then strip creds before MCP main |
+| Login invalid but MT5 already logged in | Wrong `MT5_SERVER` or duplicate login attempt | Copy exact server name from MT5 account properties; do not use IP unless MT5 shows it |
 | ZeroMQ not connected | Service not started | Start `DWX_ZeroMQ_Server` as Service |
 | Symbols missing | Not in MarketWatch | Right-click MarketWatch → Show All, or run test script |
 | Port conflict | Another process on 32768–32770 | `netstat -ano \| findstr 32768` and stop conflicting process |
 
 ---
 
-## 5. Security notes
+## 5. Operator watchdog (24h monitoring)
+
+Continuous MT5 vs engine reconciliation during live rounds:
+
+```bash
+# Single cycle (writes data/operator_snapshot.json)
+python scripts/operator_watchdog.py --once
+
+# Daemon — default 120s interval
+python scripts/operator_watchdog.py --interval 120 --dashboard-url http://127.0.0.1:8080
+
+# Dashboard API
+# GET  /api/operator/snapshot
+# GET  /api/operator/snapshot/history
+# POST /api/operator/watchdog/trigger  {"confirm": true}
+```
+
+Environment variables (see `.env.example`):
+
+| Variable | Purpose |
+|----------|---------|
+| `OPERATOR_WATCHDOG_ENABLED` | Auto-start watchdog with `python main.py --mode live --with-dashboard` (default true) |
+| `OPERATOR_WATCHDOG_INTERVAL_SEC` | Daemon sleep between cycles (default 60) |
+| `OPERATOR_DASHBOARD_URL` | Dashboard base URL for API polling |
+| `OPERATOR_EQUITY_TOLERANCE_PCT` | Max MT5 vs engine equity delta (default 0.5%) |
+| `OPERATOR_ALERT_MIN_STATUS` | Alert when status is YELLOW or RED (default YELLOW) |
+| `OPERATOR_ALERT_LOG` | Append JSON lines to `logs/operator_alerts.log` |
+| `OPERATOR_ALERT_LOGFIRE` | Emit `operator_watchdog_alert` events (configure alerts in Logfire UI) |
+| `OPERATOR_ALERT_WEBHOOK` | Optional Discord/Slack/generic webhook URL |
+| `OPERATOR_ALERT_NOTION` | Create Notion task on RED (30min dedupe) |
+| `OPERATOR_ZMQ_ONLY` | Skip MetaTrader5 Python API checks |
+
+Dashboard API for alert history: `GET /api/operator/alerts?limit=20`
+
+Deep preflight (includes unified MT5 checks):
+
+```bash
+curl "http://127.0.0.1:8080/api/operator/preflight?deep=true&zmq_only=false"
+```
+
+---
+
+## 6. Security notes
 
 - Never commit `.env` or hardcode passwords in MCP config
 - Test with the **competition account only** — no multi-account logic is permitted

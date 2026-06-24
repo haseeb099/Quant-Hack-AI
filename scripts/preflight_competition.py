@@ -21,9 +21,25 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="QuantAI pre-competition preflight")
     parser.add_argument("--zmq-only", action="store_true", help="Skip LiveFeed, test ZMQ poll only")
     parser.add_argument("--with-cycle", action="store_true", help="Run one simulation cycle")
+    parser.add_argument(
+        "--competition",
+        action="store_true",
+        default=True,
+        help="Run competition gates (OHLCV, reconciliation, phase) — default on",
+    )
+    parser.add_argument(
+        "--no-competition",
+        action="store_true",
+        help="Skip competition-specific gates",
+    )
     args = parser.parse_args()
 
-    result = run_preflight(zmq_only=args.zmq_only, with_cycle=args.with_cycle)
+    competition = args.competition and not args.no_competition
+    result = run_preflight(
+        zmq_only=args.zmq_only,
+        with_cycle=args.with_cycle,
+        competition=competition,
+    )
     for check in result["checks"]:
         status = "PASS" if check["passed"] else "FAIL"
         detail = check.get("detail", "")

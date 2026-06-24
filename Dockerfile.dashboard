@@ -12,6 +12,9 @@ COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm ci --ignore-scripts 2>/dev/null || npm install
 
 COPY frontend/ ./
+
+ARG VITE_DASHBOARD_AUTH_TOKEN=""
+ENV VITE_DASHBOARD_AUTH_TOKEN=$VITE_DASHBOARD_AUTH_TOKEN
 RUN npm run build
 
 # --- Python runtime ---

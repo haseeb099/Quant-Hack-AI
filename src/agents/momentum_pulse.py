@@ -25,6 +25,26 @@ class MomentumPulseAgent(BaseTradingAgent):
         expanding = features.macd_histogram < prev_hist
         return macd_line < macd_signal and features.macd_histogram < 0 and prev_hist >= 0 and expanding
 
+    @staticmethod
+    def _bullish_continuation(features: FeatureVector) -> bool:
+        prev_hist = features.extras.get("macd_histogram_prev", 0.0)
+        return (
+            features.macd_histogram > 0
+            and features.macd_histogram > prev_hist
+            and features.ema_9 > features.ema_21
+            and features.close > features.ema_9
+        )
+
+    @staticmethod
+    def _bearish_continuation(features: FeatureVector) -> bool:
+        prev_hist = features.extras.get("macd_histogram_prev", 0.0)
+        return (
+            features.macd_histogram < 0
+            and features.macd_histogram < prev_hist
+            and features.ema_9 < features.ema_21
+            and features.close < features.ema_9
+        )
+
     def analyze(self, features: FeatureVector) -> AgentSignal:
         cfg = self.config
         adx_threshold = cfg.get("adx_threshold", 25)
@@ -33,6 +53,7 @@ class MomentumPulseAgent(BaseTradingAgent):
         max_conf = cfg.get("max_confidence", 0.80)
         stop_mult = cfg.get("stop_atr_mult", 1.8)
         target_mult = cfg.get("target_atr_mult", 2.5)
+        allow_continuation = cfg.get("allow_continuation", False)
 
         direction = Direction.HOLD
         confidence = 0.0
@@ -57,18 +78,26 @@ class MomentumPulseAgent(BaseTradingAgent):
             )
 
         transition_penalty = 1.0
-        if 25 <= features.adx <= 28:
-            transition_penalty = 0.5
-            reasoning = "ADX transition zone 25-28 — reduced confidence"
+        if 18 <= features.adx <= 24:
+            transition_penalty = 0.85
+            reasoning = "ADX building zone — moderate confidence"
 
         if self._macd_bullish_cross(features) and features.ema_9 > features.ema_21:
             direction = Direction.BUY
-            confidence = (base_conf + 0.05) * transition_penalty
-            reasoning = "Bullish momentum: ADX>25, MACD cross up with expanding histogram"
+            confidence = (base_conf + 0.08) * transition_penalty
+            reasoning = "Bullish momentum: MACD cross up with expanding histogram"
         elif self._macd_bearish_cross(features) and features.ema_9 < features.ema_21:
             direction = Direction.SELL
-            confidence = (base_conf + 0.05) * transition_penalty
-            reasoning = "Bearish momentum: ADX>25, MACD cross down with expanding histogram"
+            confidence = (base_conf + 0.08) * transition_penalty
+            reasoning = "Bearish momentum: MACD cross down with expanding histogram"
+        elif allow_continuation and self._bullish_continuation(features):
+            direction = Direction.BUY
+            confidence = base_conf * transition_penalty
+            reasoning = "Bullish momentum continuation with rising MACD histogram"
+        elif allow_continuation and self._bearish_continuation(features):
+            direction = Direction.SELL
+            confidence = base_conf * transition_penalty
+            reasoning = "Bearish momentum continuation with falling MACD histogram"
 
         confidence = self._clamp_confidence(confidence, 0.0, max_conf)
         stop = target = None

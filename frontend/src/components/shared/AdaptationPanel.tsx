@@ -13,6 +13,8 @@ const AGENT_ORDER = [
   "breakout_hunter",
   "momentum_pulse",
   "mean_reversion",
+  "sentiment_agent",
+  "ml_signal",
 ];
 
 export function AdaptationPanel() {
@@ -44,6 +46,12 @@ export function AdaptationPanel() {
   const plan = data.plan;
   const weights = plan?.new_weights ?? data.current_weights;
   const oldWeights = plan?.old_weights ?? data.current_weights;
+  const totalWeight = AGENT_ORDER.reduce(
+    (sum, agent) => sum + (weights?.[agent] ?? 0),
+    0,
+  );
+  const normalizePct = (w: number) =>
+    totalWeight > 0 ? ((w / totalWeight) * 100).toFixed(0) : "0";
 
   return (
     <Card className="border-border/60 bg-card">
@@ -78,19 +86,22 @@ export function AdaptationPanel() {
             return (
               <div
                 key={agent}
-                className="flex items-center justify-between rounded-md border border-border/50 px-2.5 py-2 text-xs"
+                className="rounded-md border border-border/50 px-2.5 py-2 text-xs"
               >
-                <span>{agentDisplayName(agent)}</span>
-                <span className="flex items-center gap-1 font-mono">
-                  {(oldW * 100).toFixed(0)}%
+                <div className="min-w-0 truncate font-medium">
+                  {agentDisplayName(agent)}
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-1 font-mono">
+                  {normalizePct(oldW)}%
                   <ArrowRight className="size-3 text-muted-foreground" />
-                  {(newW * 100).toFixed(0)}%
-                  {Math.abs(delta) > 0.001 && (
+                  {normalizePct(newW)}%
+                  {Math.abs(delta) > 0.001 && totalWeight > 0 && (
                     <span className={delta > 0 ? "text-emerald-400" : "text-destructive"}>
-                      ({delta > 0 ? "+" : ""}{(delta * 100).toFixed(1)}%)
+                      ({delta > 0 ? "+" : ""}
+                      {((delta / totalWeight) * 100).toFixed(1)}%)
                     </span>
                   )}
-                </span>
+                </div>
               </div>
             );
           })}

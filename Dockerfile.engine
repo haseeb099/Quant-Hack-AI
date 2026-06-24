@@ -26,4 +26,4 @@ RUN mkdir -p logs data
 
 # Default: live trading with dashboard state publishing
 # Override CMD in Northflank for simulate/single-cycle modes
-CMD ["python", "main.py", "--mode", "live", "--phase", "round1", "--with-dashboard"]
+CMD ["python", "main.py", "--mode", "live", "--phase", "auto", "--with-dashboard"]

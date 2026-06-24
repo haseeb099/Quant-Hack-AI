@@ -2,19 +2,48 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from fastapi import APIRouter
 
 from src.web.runtime_state import read_state
 
 router = APIRouter(tags=["agents"])
 
-AGENT_NAMES = ["trend_surfer", "breakout_hunter", "momentum_pulse", "mean_reversion"]
+AGENT_NAMES = [
+    "trend_surfer",
+    "breakout_hunter",
+    "momentum_pulse",
+    "mean_reversion",
+    "sentiment_agent",
+    "ml_signal",
+]
 AGENT_LABELS = {
     "trend_surfer": "TrendSurfer",
     "breakout_hunter": "BreakoutHunter",
     "momentum_pulse": "MomentumPulse",
     "mean_reversion": "MeanReversion",
+    "sentiment_agent": "SentimentAgent",
+    "ml_signal": "ML Signal",
 }
+
+
+def _flatten_agent_votes(votes: list) -> list[dict]:
+    """Expand nested {symbol, votes: [...]} into flat vote dicts with symbol on each."""
+    flat: list[dict] = []
+    for item in votes:
+        if not isinstance(item, dict):
+            continue
+        nested = item.get("votes")
+        if isinstance(nested, list):
+            symbol = item.get("symbol")
+            for vote in nested:
+                if isinstance(vote, dict):
+                    flat.append({**vote, "symbol": vote.get("symbol", symbol)})
+            continue
+        flat.append(item)
+    return flat
 
 
 def _agent_stats() -> list[dict]:
@@ -31,9 +60,56 @@ def _agent_stats() -> list[dict]:
         ]
     except Exception:
         return [
-            {"agent": n, "label": AGENT_LABELS.get(n, n), "win_rate": 0.5, "avg_r": 0.0, "sample_size": 0}
+            {"agent": n, "label": AGENT_LABELS.get(n, n), "win_rate": None, "avg_r": 0.0, "sample_size": 0}
             for n in AGENT_NAMES
         ]
+
+
+@router.get("/api/agents/health")
+def get_agent_health() -> dict:
+    try:
+        from src.operator.agent_health import load_agent_health, run_agent_health
+
+        report = load_agent_health()
+        if not report:
+            report = run_agent_health(persist=True)
+        return report
+    except Exception as exc:
+        return {"status": "RED", "error": str(exc), "agents": {}}
+
+
+@router.get("/api/agents/audit")
+def get_agent_audit() -> dict:
+    try:
+        from src.learning.agent_audit import load_agent_audit, run_agent_audit
+
+        report = load_agent_audit()
+        if not report:
+            report = run_agent_audit(persist=True)
+        return report
+    except Exception as exc:
+        return {"error": str(exc), "agents": {}, "recommendations": []}
+
+
+@router.get("/api/agents/tuned-config")
+def get_tuned_config() -> dict:
+    path = Path("data/agents_tuned.yaml")
+    plan_path = Path("data/adaptation_plan.json")
+    plan = None
+    if plan_path.exists():
+        try:
+            with open(plan_path, encoding="utf-8") as f:
+                plan = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            plan = None
+    tuned_exists = path.exists()
+    tuned_text = path.read_text(encoding="utf-8") if tuned_exists else None
+    return {
+        "exists": tuned_exists,
+        "path": str(path),
+        "yaml": tuned_text,
+        "plan": plan,
+    }
 
 
 @router.get("/api/agents")
@@ -84,7 +160,8 @@ def get_last_cycle_votes() -> dict:
     last_cycle = state.get("last_cycle", {})
     return {
         "symbols_processed": last_cycle.get("symbols_processed", 0),
+        "symbols_attempted": last_cycle.get("symbols_attempted", 0),
         "decisions": last_cycle.get("decisions", []),
-        "agent_votes": last_cycle.get("agent_votes", []),
+        "agent_votes": _flatten_agent_votes(last_cycle.get("agent_votes", [])),
         "last_cycle_at": state.get("last_cycle_at"),
     }

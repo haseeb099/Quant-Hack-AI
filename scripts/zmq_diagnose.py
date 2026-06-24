@@ -73,6 +73,16 @@ def main() -> int:
             print("[PASS] Tick stream:", json.dumps(ticks, default=str)[:120])
         else:
             print("[WARN] No tick yet (may arrive within 1-2s after connect)")
+
+        df = conn.get_ohlcv("EUR/USD", "M15", 320)
+        bar_count = len(df) if df is not None else 0
+        if bar_count >= 50:
+            print(f"[PASS] DATA EUR/USD M15: {bar_count} bars")
+        else:
+            print(f"[FAIL] DATA EUR/USD M15: {bar_count} bars (need >=50)")
+            conn.close()
+            return 1
+
         conn.close()
         return 0
 

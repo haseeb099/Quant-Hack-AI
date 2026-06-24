@@ -29,7 +29,7 @@ class KellySizer:
     ) -> float:
         kelly_pct = self._half_kelly(win_rate, reward_risk_ratio)
         vol_adj = 1.0 / (1.0 + atr_14 / (atr_50 + 1e-9))
-        conf_scale = 0.7 + (confidence * 0.3)  # 0.7 at conf=0, 1.0 at conf=1
+        conf_scale = 0.82 + (confidence * 0.28)  # 0.82 at conf=0, 1.10 at conf=1
 
         raw = equity * kelly_pct * vol_adj * conf_scale
         raw *= phase_multiplier * drawdown_multiplier * orchestrator_scale
