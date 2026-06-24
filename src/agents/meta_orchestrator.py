@@ -121,9 +121,10 @@ class MetaOrchestrator:
         min_conf = self._min_confidence()
 
         if not actionable or max(s.confidence for s in actionable) < min_conf:
-            debate_decision = self._debate_fallback_decision(features, signals, context, min_conf)
-            if debate_decision is not None:
-                return self._finalize_decision(debate_decision, signals)
+            if not (context and context.get("block_debate_fallback")):
+                debate_decision = self._debate_fallback_decision(features, signals, context, min_conf)
+                if debate_decision is not None:
+                    return self._finalize_decision(debate_decision, signals)
             return OrchestratorDecision(
                 symbol=features.symbol,
                 direction=Direction.HOLD,
@@ -166,9 +167,10 @@ class MetaOrchestrator:
                 decision.skip_reason = skip_reason
 
         if decision.direction == Direction.HOLD:
-            debate_decision = self._debate_fallback_decision(features, signals, context, min_conf)
-            if debate_decision is not None:
-                return self._finalize_decision(debate_decision, signals)
+            if not (context and context.get("block_debate_fallback")):
+                debate_decision = self._debate_fallback_decision(features, signals, context, min_conf)
+                if debate_decision is not None:
+                    return self._finalize_decision(debate_decision, signals)
 
         return self._finalize_decision(decision, signals)
 

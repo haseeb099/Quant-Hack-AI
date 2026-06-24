@@ -20,6 +20,7 @@ MAX_HOLD_M15_BARS = 24
 PROFIT_LOCK_M15_BARS = 12
 PROFIT_LOCK_MIN_R = 0.75
 M15_BAR_SECONDS = 15 * 60
+_R_EPS = 1e-6
 
 
 @dataclass
@@ -35,6 +36,7 @@ class PositionMeta:
     bars_held: int = 0
     partial_taken: bool = False
     breakeven_moved: bool = False
+    peak_r: float = 0.0
 
 
 @dataclass
@@ -76,6 +78,10 @@ class PositionManager:
         self.profit_lock_min_r = float(cfg.get("profit_lock_min_r", PROFIT_LOCK_MIN_R))
         self.adverse_stop_m15_bars = int(cfg.get("adverse_stop_m15_bars", 0))
         self.adverse_stop_r = float(cfg.get("adverse_stop_r", -0.40))
+        self.max_adverse_r = float(cfg.get("max_adverse_r", 0.0))
+        self.never_green_bars = int(cfg.get("never_green_bars", 0))
+        self.never_green_peak_r = float(cfg.get("never_green_peak_r", 0.05))
+        self.never_green_max_r = float(cfg.get("never_green_max_r", -0.20))
         self._state = PositionManagerState()
 
     @staticmethod
@@ -197,11 +203,35 @@ class PositionManager:
             else:
                 r_multiple = (meta.entry_price - price) / sl_dist
 
+            meta.peak_r = max(meta.peak_r, r_multiple)
+
             new_regime = current_regimes.get(symbol, meta.regime)
             if self.regime_flip_enabled and self._regime_against(
                 meta.direction, meta.regime, new_regime,
             ):
                 actions.append(ExitAction("close", ticket, reason=f"Regime flip {meta.regime}->{new_regime}"))
+                continue
+
+            if self.max_adverse_r < 0 and r_multiple <= self.max_adverse_r + _R_EPS:
+                actions.append(ExitAction(
+                    "close", ticket,
+                    reason=f"Max adverse cut (R={r_multiple:.2f}, limit={self.max_adverse_r:.2f})",
+                ))
+                continue
+
+            if (
+                self.never_green_bars > 0
+                and meta.bars_held >= self.never_green_bars
+                and meta.peak_r < self.never_green_peak_r
+                and r_multiple <= self.never_green_max_r + _R_EPS
+            ):
+                actions.append(ExitAction(
+                    "close", ticket,
+                    reason=(
+                        f"Never-green exit ({meta.bars_held} M15 bars, "
+                        f"peak R={meta.peak_r:.2f}, R={r_multiple:.2f})"
+                    ),
+                ))
                 continue
 
             if meta.bars_held >= self.time_stop_bars and r_multiple < self.time_stop_min_r:
@@ -214,7 +244,7 @@ class PositionManager:
             if (
                 self.adverse_stop_m15_bars > 0
                 and meta.bars_held >= self.adverse_stop_m15_bars
-                and r_multiple <= self.adverse_stop_r
+                and r_multiple <= self.adverse_stop_r + _R_EPS
             ):
                 actions.append(ExitAction(
                     "close", ticket,
@@ -301,6 +331,124 @@ class PositionManager:
 
         return actions
 
+    def build_diagnostics(
+        self,
+        positions: list[dict[str, Any]],
+        exit_actions: list[ExitAction],
+        current_regimes: dict[str, str],
+        atr_by_symbol: dict[str, float],
+        current_prices: dict[str, float],
+        exit_prices: dict[str, float] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Explain why open positions are held or would be closed this cycle."""
+        exit_prices = exit_prices or current_prices
+        by_ticket: dict[int, list[ExitAction]] = {}
+        for action in exit_actions:
+            by_ticket.setdefault(action.ticket, []).append(action)
+
+        out: list[dict[str, Any]] = []
+        for pos in positions:
+            ticket = int(pos.get("ticket", 0) or 0)
+            if not ticket:
+                continue
+            meta = self._state.meta.get(ticket)
+            if meta is None or meta.entry_price <= 0:
+                continue
+
+            symbol = meta.symbol
+            price = exit_prices.get(
+                symbol,
+                current_prices.get(symbol, float(pos.get("price_current", meta.entry_price))),
+            )
+            atr = atr_by_symbol.get(symbol, 0.0)
+            sl_dist = abs(meta.entry_price - (meta.sl or meta.entry_price))
+            if sl_dist <= 0:
+                sl_dist = atr * 1.5 if atr > 0 else meta.entry_price * 0.01
+
+            if meta.direction in ("BUY", "LONG"):
+                r_multiple = (price - meta.entry_price) / sl_dist
+            else:
+                r_multiple = (meta.entry_price - price) / sl_dist
+
+            ticket_actions = by_ticket.get(ticket, [])
+            would_close = [a.reason for a in ticket_actions if a.action == "close"]
+            would_partial = [a.reason for a in ticket_actions if a.action == "partial_close"]
+            would_modify = [a.reason for a in ticket_actions if a.action == "modify_sl"]
+
+            keep_open: list[str] = []
+            if not would_close:
+                keep_open = self._keep_open_reasons(meta, r_multiple, current_regimes.get(symbol, meta.regime))
+            watch: list[str] = []
+            if self.max_adverse_r < 0 and r_multiple < 0:
+                watch.append(
+                    f"Adverse cut at {self.max_adverse_r:.2f}R (now {r_multiple:.2f}R)",
+                )
+            if (
+                self.never_green_bars > 0
+                and meta.peak_r < self.never_green_peak_r
+                and meta.bars_held < self.never_green_bars
+            ):
+                bars_left = self.never_green_bars - meta.bars_held
+                watch.append(f"Never-green exit in {bars_left} bar(s) if peak stays below +{self.never_green_peak_r:.2f}R")
+            if (
+                meta.bars_held < self.time_stop_bars
+                and r_multiple < self.time_stop_min_r
+            ):
+                bars_left = self.time_stop_bars - meta.bars_held
+                watch.append(
+                    f"Time stop in {bars_left} bar(s) if R stays below +{self.time_stop_min_r:.2f}",
+                )
+
+            out.append({
+                "ticket": ticket,
+                "symbol": symbol,
+                "direction": meta.direction,
+                "r_multiple": round(r_multiple, 3),
+                "peak_r": round(meta.peak_r, 3),
+                "bars_held": meta.bars_held,
+                "entry_regime": meta.regime,
+                "current_regime": current_regimes.get(symbol, meta.regime),
+                "unrealized_pnl": float(pos.get("profit", 0) or 0),
+                "sl": meta.sl,
+                "volume": meta.volume,
+                "would_close": would_close,
+                "would_partial": would_partial,
+                "would_modify_sl": would_modify,
+                "keep_open": keep_open,
+                "watch": watch,
+            })
+        return out
+
+    def _keep_open_reasons(
+        self,
+        meta: PositionMeta,
+        r_multiple: float,
+        current_regime: str,
+    ) -> list[str]:
+        reasons: list[str] = []
+        if r_multiple >= 0:
+            if not meta.partial_taken and r_multiple < self.partial_take_r:
+                reasons.append(
+                    f"Winner building (+{r_multiple:.2f}R) — partial take at +{self.partial_take_r:.1f}R",
+                )
+            elif r_multiple < self.trail_after_r:
+                reasons.append(
+                    f"In profit (+{r_multiple:.2f}R) — trailing starts at +{self.trail_after_r:.1f}R",
+                )
+            else:
+                reasons.append(f"Strong winner (+{r_multiple:.2f}R) — trail / run targets active")
+            if not meta.breakeven_moved and r_multiple < self.breakeven_r:
+                reasons.append(f"Breakeven SL at +{self.breakeven_r:.2f}R")
+        else:
+            reasons.append(f"Drawdown ({r_multiple:.2f}R) — thesis still valid until exit rules fire")
+        if meta.sl is not None:
+            reasons.append(f"Broker SL at {meta.sl:.5f}")
+        if meta.regime == current_regime:
+            reasons.append(f"Regime unchanged ({current_regime})")
+        else:
+            reasons.append(f"Regime {meta.regime} → {current_regime} (monitor flip exit)")
+        return reasons
+
     def get_meta(self, ticket: int) -> PositionMeta | None:
         return self._state.meta.get(int(ticket))
 
@@ -342,6 +490,14 @@ class PositionManager:
             self.adverse_stop_m15_bars = int(config["adverse_stop_m15_bars"])
         if "adverse_stop_r" in config:
             self.adverse_stop_r = float(config["adverse_stop_r"])
+        if "max_adverse_r" in config:
+            self.max_adverse_r = float(config["max_adverse_r"])
+        if "never_green_bars" in config:
+            self.never_green_bars = int(config["never_green_bars"])
+        if "never_green_peak_r" in config:
+            self.never_green_peak_r = float(config["never_green_peak_r"])
+        if "never_green_max_r" in config:
+            self.never_green_max_r = float(config["never_green_max_r"])
 
     @staticmethod
     def _regime_against(direction: str, entry_regime: str, current_regime: str) -> bool:

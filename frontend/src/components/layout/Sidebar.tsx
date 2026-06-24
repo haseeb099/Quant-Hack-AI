@@ -20,7 +20,7 @@ const tradingNav = [
   { to: "/trades", label: "Trades", icon: Activity },
   { to: "/risk", label: "Risk", icon: ShieldAlert },
   { to: "/market", label: "Market", icon: CandlestickChart },
-  { to: "/decisions", label: "Decisions", icon: Radio },
+  { to: "/decisions", label: "Scan log", icon: Radio },
 ];
 
 const opsNav = [{ to: "/agents", label: "Agents", icon: Bot }];

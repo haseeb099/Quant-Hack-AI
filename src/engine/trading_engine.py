@@ -131,6 +131,7 @@ class TradingEngine:
         self._fill_undershoot_block = False
         self._fx_shorts_opened_this_cycle = 0
         self._chf_entries_opened_this_cycle = 0
+        self._crypto_entries_opened_this_cycle = 0
         self._finalized_tickets: set[int] = closed_tickets_from_jsonl(self.trade_logger.jsonl_path)
         self._paused = False
         self._cycle_in_progress = False
@@ -139,6 +140,8 @@ class TradingEngine:
         self._next_cycle_at: str | None = None
         self._live_filters: dict = {}
         self._pending_limit_orders: dict[str, dict] = {}
+        self._cycle_events: list[dict] = []
+        self._position_diagnostics: list[dict] = []
 
         self._rebuild_runtime_for_phase()
 
@@ -552,6 +555,10 @@ class TradingEngine:
             "profit_lock_min_r",
             "adverse_stop_m15_bars",
             "adverse_stop_r",
+            "max_adverse_r",
+            "never_green_bars",
+            "never_green_peak_r",
+            "never_green_max_r",
         ):
             if key in lf:
                 cfg[key] = lf[key]
@@ -589,6 +596,76 @@ class TradingEngine:
     def _sync_position_manager_config(self) -> None:
         if hasattr(self, "position_manager"):
             self.position_manager.apply_runtime_config(self._position_manager_config())
+
+    def _log_cycle_event(
+        self,
+        event_type: str,
+        symbol: str,
+        *,
+        direction: str = "",
+        reason: str = "",
+        ticket: int | None = None,
+        extra: dict | None = None,
+    ) -> None:
+        self._cycle_events.append({
+            "type": event_type,
+            "symbol": symbol,
+            "direction": direction,
+            "reason": reason,
+            "ticket": ticket,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            **(extra or {}),
+        })
+
+    def _build_scan_meta(
+        self,
+        symbol: str,
+        signals: list,
+        decision,
+        live_filters: dict,
+        phase_rules: dict,
+    ) -> dict[str, Any]:
+        min_consensus = self._min_consensus_for_symbol(symbol, live_filters, phase_rules)
+        if live_filters.get("use_audit_routing", True):
+            audit_min = self.competition_strategy.min_consensus_for_symbol(
+                symbol,
+                min_consensus,
+                tier_a_consensus=int(live_filters.get("tier_a_min_consensus", 1)),
+                tier_b_consensus=int(live_filters.get("tier_b_min_consensus", 2)),
+                tier_c_consensus=int(live_filters.get("tier_c_min_consensus", 2)),
+            )
+            solo_syms = set(live_filters.get("audit_solo_consensus_symbols") or [])
+            if symbol in solo_syms:
+                min_consensus = audit_min
+            elif self._is_crypto_symbol(symbol) or self._is_fx_symbol(symbol):
+                min_consensus = max(min_consensus, audit_min)
+            else:
+                min_consensus = audit_min
+
+        direction = getattr(getattr(decision, "direction", None), "value", "HOLD")
+        agreeing_agents = [
+            s.agent_name
+            for s in signals
+            if s.is_actionable and s.direction.value == direction
+        ]
+        sym_conf = (live_filters.get("symbol_min_confidence") or {}).get(symbol)
+        min_conf = sym_conf if sym_conf is not None else live_filters.get("min_confidence")
+
+        return {
+            "symbol_tier": self.competition_strategy.symbol_tier(symbol),
+            "consensus_required": int(min_consensus),
+            "consensus_agreeing": len(agreeing_agents),
+            "agreeing_agents": agreeing_agents,
+            "min_confidence_required": float(min_conf) if min_conf is not None else None,
+            "orchestrator_confidence": float(getattr(decision, "confidence", 0) or 0),
+        }
+
+    def _symbol_cooldown_minutes(self) -> int:
+        lf = getattr(self, "_live_filters", {}) or {}
+        raw = lf.get("symbol_cooldown_minutes")
+        if raw is not None:
+            return int(raw)
+        return int(self.config.phase_rules.get("symbol_cooldown_minutes", 0) or 0)
 
     @staticmethod
     def _normalize_symbol(symbol: str) -> str:
@@ -714,6 +791,44 @@ class TradingEngine:
             return ticket
         latest = max(matching, key=lambda p: int(p.get("time", 0) or 0))
         return int(latest.get("ticket", 0) or 0) or None
+
+    def _ensure_position_stops(
+        self,
+        ticket: int,
+        symbol: str,
+        sl: float | None,
+        tp: float | None,
+    ) -> None:
+        """Attach SL/TP when broker fill omitted stops (e.g. connectivity test or partial EA ack)."""
+        if self.simulation or (sl is None and tp is None):
+            return
+        try:
+            positions = self.connector.get_positions()
+            pos = next((p for p in positions if int(p.get("ticket", 0)) == ticket), None)
+            if not pos:
+                return
+            cur_sl = float(pos.get("sl") or 0)
+            cur_tp = float(pos.get("tp") or 0)
+            need_sl = sl is not None and cur_sl <= 0
+            need_tp = tp is not None and cur_tp <= 0
+            if not need_sl and not need_tp:
+                return
+            mod = self.connector.modify_position(
+                ticket,
+                sl=sl if need_sl else None,
+                tp=tp if need_tp else None,
+            )
+            if mod.get("status") in ("ok", "simulated"):
+                logger.info("Attached stops ticket=%d %s sl=%s tp=%s", ticket, symbol, sl, tp)
+            else:
+                logger.warning(
+                    "Failed to attach stops ticket=%d %s: %s",
+                    ticket,
+                    symbol,
+                    mod.get("message"),
+                )
+        except Exception as exc:
+            logger.warning("ensure_position_stops failed ticket=%d: %s", ticket, exc)
 
     def _validate_open_ticket(
         self,
@@ -1577,7 +1692,9 @@ class TradingEngine:
                 "decisions": self._cycle_decisions,
                 "agent_votes": self._cycle_votes,
                 "skip_summary": self._cycle_skip_summary(),
+                "cycle_events": self._cycle_events,
             },
+            "position_monitor": self._position_diagnostics,
             "instruments": self._build_instruments_state(),
             "market": {
                 "last_tick_at": now.isoformat(),
@@ -1670,6 +1787,8 @@ class TradingEngine:
         session_name: str = "",
         regime: str = "unknown",
         reasoning: str = "",
+        scan_stage: str = "blocked",
+        **extra: Any,
     ) -> None:
         self._cycle_decisions.append({
             "symbol": symbol,
@@ -1678,9 +1797,11 @@ class TradingEngine:
             "regime": regime,
             "session": session_name,
             "reasoning": reasoning or skip_reason,
-            "agent_votes": [],
+            "agent_votes": extra.pop("agent_votes", []),
             "status": "skipped",
             "skip_reason": skip_reason,
+            "scan_stage": scan_stage,
+            **extra,
         })
 
     @staticmethod
@@ -1795,9 +1916,12 @@ class TradingEngine:
         cycle_start = datetime.now(timezone.utc)
         self._cycle_decisions = []
         self._cycle_votes = []
+        self._cycle_events = []
+        self._position_diagnostics = []
         self._cycle_symbols_attempted = 0
         self._fx_shorts_opened_this_cycle = 0
         self._chf_entries_opened_this_cycle = 0
+        self._crypto_entries_opened_this_cycle = 0
         self._cycle_in_progress = True
         try:
             if not self.compliance.record_api_request():
@@ -2041,6 +2165,18 @@ class TradingEngine:
                                 max_new,
                             )
                             break
+                        max_crypto = self._live_filters.get("max_crypto_entries_per_cycle")
+                        if (
+                            max_crypto is not None
+                            and self._is_crypto_symbol(symbol)
+                            and self._crypto_entries_opened_this_cycle >= int(max_crypto)
+                        ):
+                            self._record_cycle_skip(
+                                symbol,
+                                f"Max crypto entries per cycle ({max_crypto})",
+                                session.name,
+                            )
+                            continue
                         opened = self._process_symbol(
                             symbol, equity, dd_state, margin_state, session.name, drawdown_pct,
                             peer_adj=peer_adj, peer_sentiment=peer_sentiment,
@@ -2239,11 +2375,27 @@ class TradingEngine:
             volume_mins=volume_mins,
             m15_bar_times=m15_bar_times,
         )
+        self._position_diagnostics = self.position_manager.build_diagnostics(
+            positions,
+            exit_actions,
+            self._instrument_regimes,
+            atr_by_symbol,
+            current_prices,
+            exit_prices=exit_prices,
+        )
         for action in exit_actions:
             if action.action == "close":
                 logger.info("PositionManager closing %d: %s", action.ticket, action.reason)
                 pos = next((p for p in positions if p.get("ticket") == action.ticket), {})
                 tracked = self._open_trades.get(action.ticket, {})
+                sym = tracked.get("symbol", str(pos.get("symbol", "")))
+                self._log_cycle_event(
+                    "close",
+                    sym,
+                    direction=tracked.get("direction", str(pos.get("type", "BUY"))),
+                    reason=action.reason,
+                    ticket=int(action.ticket),
+                )
                 self.trade_logger.log(
                     symbol=tracked.get("symbol", str(pos.get("symbol", ""))),
                     regime=tracked.get("regime", ""),
@@ -2285,6 +2437,15 @@ class TradingEngine:
                             result.get("after_volume", before_vol - closed_vol),
                         )
                     tracked = self._open_trades.get(action.ticket, {})
+                    sym = tracked.get("symbol", symbol)
+                    self._log_cycle_event(
+                        "partial_close",
+                        sym,
+                        direction=tracked.get("direction", str(pos.get("type", "BUY"))),
+                        reason=action.reason,
+                        ticket=int(action.ticket),
+                        extra={"closed_volume": closed_vol},
+                    )
                     self.trade_logger.log(
                         symbol=tracked.get("symbol", symbol),
                         regime=tracked.get("regime", ""),
@@ -2589,7 +2750,7 @@ class TradingEngine:
         self.memory.store_trade(record)
 
         symbol = tracked.get("symbol", "")
-        cooldown_min = int(self.config.phase_rules.get("symbol_cooldown_minutes", 0) or 0)
+        cooldown_min = self._symbol_cooldown_minutes()
         if symbol and cooldown_min > 0:
             self._symbol_cooldown_until[symbol] = datetime.now(timezone.utc) + timedelta(
                 minutes=cooldown_min,
@@ -2679,6 +2840,14 @@ class TradingEngine:
 
         event_gate = self.intelligence.evaluate_event_gate(symbol)
         live_filters = self._live_filters
+        if live_filters.get("block_tier_c_entries"):
+            if self.competition_strategy.symbol_tier(symbol) == "C":
+                self._record_cycle_skip(
+                    symbol,
+                    "Return push: tier-C symbol skipped (focus tier-A/B)",
+                    session_name,
+                )
+                return False
         if not event_gate.allowed and live_filters.get("tier_1_metals_crypto_reduce_only"):
             if self._is_crypto_symbol(symbol) or self._is_metal_symbol(symbol):
                 from src.intelligence.models import EventGateResult
@@ -2709,6 +2878,8 @@ class TradingEngine:
                 "agent_votes": [],
                 "status": "skipped",
                 "skip_reason": event_gate.reason,
+                "scan_stage": "event_gate",
+                "event_gate": event_gate.reason,
             })
             return False
 
@@ -2914,6 +3085,7 @@ class TradingEngine:
         context.update(orch_extra)
         context["return_focus"] = bool(phase_rules.get("return_focus"))
         context["min_orchestrator_size_scale"] = phase_rules.get("min_orchestrator_size_scale", 0.90)
+        context["block_debate_fallback"] = bool(live_filters.get("block_debate_only_entries", False))
 
         decision = self.orchestrator.decide(
             primary_features, signals, dd_state.tier, context=context,
@@ -3026,6 +3198,16 @@ class TradingEngine:
                 and decision.confidence >= a_plus_conf
                 and (not require_debate or debate_confirms)
             )
+            active_size_boost = self.competition_strategy.resolve_size_boost(
+                symbol,
+                decision.direction.value,
+                decision.confidence,
+                signals,
+                live_filters,
+                counts_as_technical=_counts_as_technical,
+            )
+        else:
+            active_size_boost = None
 
         if decision.direction.value != "HOLD" and min_consensus > 1:
             if agreeing < min_consensus and not a_plus_ok:
@@ -3052,6 +3234,40 @@ class TradingEngine:
                     "skip_reason": skip,
                 })
                 return False
+
+        if (
+            live_filters.get("block_debate_only_entries")
+            and decision.direction.value != "HOLD"
+            and decision.reasoning.startswith("Debate-driven")
+            and agreeing < min_consensus
+            and not a_plus_ok
+        ):
+            skip = (
+                f"Live filter: debate-only entry blocked "
+                f"(need {min_consensus} agreeing agents, got {agreeing})"
+            )
+            self.trade_logger.log(
+                symbol=symbol,
+                regime=primary_features.regime.value,
+                session=session_name,
+                direction=decision.direction.value,
+                confidence=decision.confidence,
+                agent_votes=decision.agent_votes,
+                status="skipped",
+                reasoning=skip,
+            )
+            self._cycle_decisions.append({
+                "symbol": symbol,
+                "direction": decision.direction.value,
+                "confidence": decision.confidence,
+                "regime": primary_features.regime.value,
+                "session": session_name,
+                "reasoning": decision.reasoning,
+                "agent_votes": vote_summary,
+                "status": "skipped",
+                "skip_reason": skip,
+            })
+            return False
 
         min_confidence = live_filters.get("min_confidence")
         sym_conf = (live_filters.get("symbol_min_confidence") or {}).get(symbol)
@@ -3348,8 +3564,16 @@ class TradingEngine:
                 "atr_14": primary_features.atr_14,
             },
             "status": "decision",
+            "scan_stage": "analyzed",
+            **self._build_scan_meta(symbol, signals, decision, live_filters, phase_rules),
         })
         decision_record = self._cycle_decisions[-1]
+        if active_size_boost:
+            decision_record["size_boost_tier"] = active_size_boost.get("boost_tier")
+            decision_record["tier_a_plus_boost"] = active_size_boost.get("boost_tier") == "tier_a_plus"
+            decision_record["size_boost"] = {
+                k: v for k, v in active_size_boost.items() if v is not None
+            }
         is_crypto = symbol in {"BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "BAR/USD"}
         balancing_dir = self._balancing_direction()
         is_balancing_trade = (
@@ -3486,9 +3710,23 @@ class TradingEngine:
         if self.intelligence.enabled:
             macro_adj = self.intelligence.macro.size_adjustment(symbol, decision.direction.value)
             size_mult *= macro_adj
-            size_mult = min(size_mult, 1.12 * peer_adj * event_size_mult)
+            macro_cap = 1.12
+            if live_filters.get("return_push"):
+                macro_cap = float(live_filters.get("return_push_macro_scale_cap", 1.28))
+            size_mult = min(size_mult, macro_cap * peer_adj * event_size_mult)
         if peer_conservative:
             size_mult = min(size_mult, peer_adj * event_size_mult)
+
+        if active_size_boost:
+            size_mult *= active_size_boost["orchestrator_scale_mult"]
+            logger.info(
+                "%s size boost for %s: orchestrator_scale x%.2f (conf=%.2f, agreeing=%d)",
+                active_size_boost.get("boost_tier", "confluence"),
+                symbol,
+                active_size_boost["orchestrator_scale_mult"],
+                decision.confidence,
+                agreeing,
+            )
 
         if self.intelligence.enabled and self._is_crypto_symbol(symbol):
             macro = self.intelligence.get_macro()
@@ -3726,6 +3964,10 @@ class TradingEngine:
             obj_risk_mult = self._objective_runtime_overrides()["risk_mult"]
             max_risk_pct = base_max_risk * obj_risk_mult * allocation
 
+        if active_size_boost:
+            max_risk_pct *= active_size_boost["max_risk_pct_mult"]
+            max_risk_pct = min(max_risk_pct, active_size_boost["max_risk_pct_ceiling"] * allocation)
+
         specs = self._get_symbol_specs(symbol)
         if (
             specs
@@ -3819,23 +4061,49 @@ class TradingEngine:
                 symbol, lots, notional_price, equity, open_positions,
             )
             max_fx_lots = live_filters.get("max_fx_lots")
+            if active_size_boost and active_size_boost.get("max_fx_lots") is not None:
+                max_fx_lots = active_size_boost["max_fx_lots"]
             if max_fx_lots is not None and self._is_fx_symbol(symbol):
                 lots = min(lots, float(max_fx_lots))
             max_crypto_lots = live_filters.get("max_crypto_lots")
+            if active_size_boost and active_size_boost.get("max_crypto_lots") is not None:
+                max_crypto_lots = active_size_boost["max_crypto_lots"]
             if max_crypto_lots is not None and self._is_crypto_symbol(symbol):
                 lots = min(lots, float(max_crypto_lots))
+            max_metal_lots = live_filters.get("max_metal_lots")
+            if active_size_boost and active_size_boost.get("max_metal_lots") is not None:
+                max_metal_lots = active_size_boost["max_metal_lots"]
+            if max_metal_lots is not None and self._is_metal_symbol(symbol):
+                lots = min(lots, float(max_metal_lots))
 
         if lots <= 0 and not self.simulation and specs:
             bump_key = None
+            bump_risk_override = None
             if self._is_crypto_symbol(symbol):
                 bump_key = "crypto_min_lot_bump"
+                if active_size_boost:
+                    bump_risk_override = active_size_boost.get("crypto_min_lot_bump_risk_pct")
             elif self._is_fx_symbol(symbol):
                 bump_key = "fx_min_lot_bump"
+                if active_size_boost:
+                    bump_risk_override = active_size_boost.get("fx_min_lot_bump_risk_pct")
+            elif self._is_metal_symbol(symbol) and active_size_boost:
+                bump_key = "fx_min_lot_bump"
+                bump_risk_override = active_size_boost.get("metal_min_lot_bump_risk_pct")
             if bump_key:
                 bump_cfg = (self._live_filters.get(bump_key) or {})
-                if bump_cfg.get("enabled"):
+                if bump_cfg.get("enabled") or bump_risk_override is not None:
                     min_conf = float(bump_cfg.get("min_orchestrator_confidence", 0.78))
+                    if active_size_boost:
+                        boost_conf = float(
+                            (live_filters.get("tier_a_plus_size_boost") or {}).get("min_confidence", 0.85)
+                            if active_size_boost.get("boost_tier") == "tier_a_plus"
+                            else (live_filters.get("audit_winner_size_boost") or {}).get("min_confidence", 0.80)
+                        )
+                        min_conf = min(min_conf, boost_conf)
                     max_risk_frac = float(bump_cfg.get("max_risk_pct_equity", 0.005))
+                    if bump_risk_override is not None:
+                        max_risk_frac = float(bump_risk_override)
                     sl_dist = abs(exec_entry - sl) if sl is not None else 0.0
                     min_lot_risk = specs["volume_min"] * sl_dist * specs["contract_size"]
                     if (
@@ -4041,6 +4309,29 @@ class TradingEngine:
         exec_status = result.get("status", "executed")
         error_msg = result.get("message")
         if exec_status not in ("ok", "simulated"):
+            if not self.simulation:
+                for delay in (0.5, 1.0, 2.5):
+                    time.sleep(delay)
+                    recovered_ticket = self._resolve_open_ticket(
+                        symbol, decision.direction.value, 0,
+                    )
+                    if not recovered_ticket:
+                        continue
+                    new_vol = self._volume_for_symbol_direction(
+                        symbol, decision.direction.value,
+                    )
+                    if new_vol > baseline_volume + 1e-4:
+                        ticket = recovered_ticket
+                        fill_confirmed = True
+                        exec_status = "ok"
+                        error_msg = None
+                        logger.warning(
+                            "Recovered late fill for %s ticket=%d after ZMQ error",
+                            symbol,
+                            ticket,
+                        )
+                        break
+        if exec_status not in ("ok", "simulated"):
             logger.error("Trade failed for %s: %s", symbol, error_msg or exec_status)
             exec_status = "error"
         elif not fill_confirmed and not self.simulation:
@@ -4084,6 +4375,20 @@ class TradingEngine:
             decision_record["skip_reason"] = error_msg
 
         if ticket and fill_confirmed:
+            decision_record["scan_stage"] = "executed"
+            self._log_cycle_event(
+                "entry",
+                symbol,
+                direction=decision.direction.value,
+                reason=decision.reasoning,
+                ticket=int(ticket),
+                extra={
+                    "confidence": decision.confidence,
+                    "consensus_agreeing": decision_record.get("consensus_agreeing"),
+                    "consensus_required": decision_record.get("consensus_required"),
+                    "size": lots,
+                },
+            )
             semantic_ctx = self.memory.get_semantic_context(
                 primary_features.regime.value, symbol, session_name,
             )
@@ -4099,6 +4404,7 @@ class TradingEngine:
                 fill_price, sl, lots,
                 primary_features.regime.value,
             )
+            self._ensure_position_stops(int(ticket), symbol, sl, tp)
             self._open_trades[ticket] = {
                 "symbol": symbol,
                 "direction": decision.direction.value,
@@ -4125,6 +4431,8 @@ class TradingEngine:
                 self._fx_shorts_opened_this_cycle += 1
             if self._is_chf_symbol(symbol):
                 self._chf_entries_opened_this_cycle += 1
+            if self._is_crypto_symbol(symbol):
+                self._crypto_entries_opened_this_cycle += 1
 
         logger.info("Executed: %s", result)
         return exec_status in ("ok", "simulated") and bool(ticket) and fill_confirmed

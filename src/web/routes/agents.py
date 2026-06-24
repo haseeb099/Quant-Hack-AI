@@ -163,5 +163,9 @@ def get_last_cycle_votes() -> dict:
         "symbols_attempted": last_cycle.get("symbols_attempted", 0),
         "decisions": last_cycle.get("decisions", []),
         "agent_votes": _flatten_agent_votes(last_cycle.get("agent_votes", [])),
+        "skip_summary": last_cycle.get("skip_summary", {}),
+        "cycle_events": last_cycle.get("cycle_events", []),
+        "position_monitor": state.get("position_monitor", []),
         "last_cycle_at": state.get("last_cycle_at"),
+        "next_cycle_at": state.get("next_cycle_at"),
     }

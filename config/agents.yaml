@@ -14,7 +14,7 @@ agents:
     base_confidence: 0.58
     max_confidence: 0.95
     pullback_atr_mult: 2.0
-    require_mtf_alignment: false
+    require_mtf_alignment: true
     best_regimes: [trending, volatile]
 
   breakout_hunter:
@@ -86,7 +86,7 @@ agents:
     anthropic_model: claude-sonnet-4-6
     doubleword_model: openai/gpt-oss-20b
     temperature: 0.12
-    min_agent_confidence: 0.35
+    min_agent_confidence: 0.52
     cooldown_minutes: 3
     max_cost_per_decision: 0.05
     size_scale_range: [0.95, 1.50]

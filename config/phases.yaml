@@ -59,52 +59,20 @@ phases:
 
   round3:
     name: Round 3 — Top 20 Push
-    risk_multiplier: 1.15
+    risk_multiplier: 1.28
     target_return: "8-15%"
     objective: maximize_return
     return_focus: true
     session_symbol_filter: false
-    cycle_minutes: 10
+    cycle_minutes: 8
     include_crypto: true
     crypto_only_if_dd_normal: false
     max_new_entries_per_cycle: 3
-    max_risk_pct: 0.016
-    min_orchestrator_size_scale: 0.90
-    prioritize_by_opportunity: true
-    symbol_cooldown_minutes: 12
-    min_consensus_agents: 1
-    disabled_agents: [breakout_hunter]
-    blocked_symbols: [XRP/USD, BAR/USD, EUR/GBP, USD/CHF, USD/JPY]
-    trail_after_r: 1.25
-    regime_flip_enabled: true
-    time_stop_m15_bars: 10
-    time_stop_bars: 10
-    time_stop_min_r: 0.15
-    enable_partial_takes: true
-    enable_breakeven: true
-    enable_trailing: true
-    partial_take_r: 1.0
-    partial_fraction: 0.33
-    breakeven_r: 0.75
-    start: "2026-06-23T22:00:00+01:00"
-    end: "2026-06-24T22:00:00+01:00"
-
-  finals:
-    name: Finals — Top 20 Win
-    risk_multiplier: 1.18
-    target_return: "12-25%"
-    objective: maximize_return
-    return_focus: true
-    discipline_halt_below: 95
-    session_symbol_filter: false
-    cycle_minutes: 10
-    include_crypto: true
-    max_new_entries_per_cycle: 1
-    max_risk_pct: 0.014
+    max_risk_pct: 0.022
     min_agent_confidence: 0.55
     min_orchestrator_size_scale: 0.95
     prioritize_by_opportunity: true
-    symbol_cooldown_minutes: 30
+    symbol_cooldown_minutes: 20
     min_consensus_agents: 2
     disabled_agents: [breakout_hunter]
     blocked_symbols: [XRP/USD, BAR/USD, EUR/GBP, USD/CHF, USD/JPY]
@@ -119,6 +87,51 @@ phases:
     partial_take_r: 1.5
     partial_fraction: 0.25
     breakeven_r: 0.75
+    max_adverse_r: -0.65
+    adverse_stop_m15_bars: 3
+    adverse_stop_r: -0.30
+    never_green_bars: 3
+    never_green_peak_r: 0.05
+    never_green_max_r: -0.15
+    start: "2026-06-23T22:00:00+01:00"
+    end: "2026-06-24T22:00:00+01:00"
+
+  finals:
+    name: Finals — Top 20 Win
+    risk_multiplier: 1.35
+    target_return: "12-25%"
+    objective: maximize_return
+    return_focus: true
+    discipline_halt_below: 95
+    session_symbol_filter: false
+    cycle_minutes: 8
+    include_crypto: true
+    max_new_entries_per_cycle: 3
+    max_risk_pct: 0.020
+    min_agent_confidence: 0.55
+    min_orchestrator_size_scale: 0.95
+    prioritize_by_opportunity: true
+    symbol_cooldown_minutes: 20
+    min_consensus_agents: 2
+    disabled_agents: [breakout_hunter]
+    blocked_symbols: [XRP/USD, BAR/USD, EUR/GBP, USD/CHF, USD/JPY]
+    enable_partial_takes: true
+    enable_breakeven: true
+    enable_trailing: true
+    trail_after_r: 1.75
+    regime_flip_enabled: true
+    time_stop_m15_bars: 20
+    time_stop_bars: 20
+    time_stop_min_r: 0.25
+    partial_take_r: 1.5
+    partial_fraction: 0.25
+    breakeven_r: 0.75
+    max_adverse_r: -0.65
+    adverse_stop_m15_bars: 3
+    adverse_stop_r: -0.30
+    never_green_bars: 3
+    never_green_peak_r: 0.05
+    never_green_max_r: -0.15
     start: "2026-06-24T22:00:00+01:00"
     end: "2026-06-26T22:00:00+01:00"
 

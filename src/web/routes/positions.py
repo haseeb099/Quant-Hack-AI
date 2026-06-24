@@ -14,6 +14,17 @@ router = APIRouter(tags=["positions"])
 def get_positions() -> dict:
     state = read_state()
     positions = state.get("positions", [])
+    monitor = state.get("position_monitor", [])
+    monitor_by_ticket = {
+        int(m["ticket"]): m for m in monitor if m.get("ticket") is not None
+    }
+    enriched = []
+    for p in positions:
+        row = dict(p)
+        ticket = p.get("ticket")
+        if ticket is not None and int(ticket) in monitor_by_ticket:
+            row["monitor"] = monitor_by_ticket[int(ticket)]
+        enriched.append(row)
     total_exposure = 0.0
     total_pnl = 0.0
     for p in positions:
@@ -25,8 +36,9 @@ def get_positions() -> dict:
             total_exposure += position_notional_from_dict(p, contract)
         total_pnl += float(p.get("profit", p.get("unrealized_pnl", 0)))
     return {
-        "positions": positions,
-        "count": len(positions),
+        "positions": enriched,
+        "count": len(enriched),
         "total_exposure": total_exposure,
         "total_unrealized_pnl": total_pnl,
+        "position_monitor": monitor,
     }

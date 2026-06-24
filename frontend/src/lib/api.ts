@@ -445,12 +445,14 @@ export interface Position {
   opened_at: string;
   notional?: number;
   contract_size?: number;
+  monitor?: PositionMonitor;
 }
 
 export interface PositionsResponse {
   positions: Position[];
   total_exposure?: number;
   total_unrealized_pnl?: number;
+  position_monitor?: PositionMonitor[];
 }
 
 export interface AgentVote {
@@ -553,6 +555,50 @@ export interface CycleDecision {
   features_summary?: string;
   orchestrator_output?: string;
   agent_votes?: AgentVote[];
+  status?: string;
+  scan_stage?: string;
+  regime?: string;
+  session?: string;
+  symbol_tier?: string;
+  consensus_required?: number;
+  consensus_agreeing?: number;
+  agreeing_agents?: string[];
+  min_confidence_required?: number;
+  orchestrator_confidence?: number;
+  event_gate?: string;
+}
+
+export interface CycleEvent {
+  type: string;
+  symbol: string;
+  direction?: string;
+  reason?: string;
+  ticket?: number;
+  timestamp?: string;
+  confidence?: number;
+  consensus_agreeing?: number;
+  consensus_required?: number;
+  size?: number;
+  closed_volume?: number;
+}
+
+export interface PositionMonitor {
+  ticket: number;
+  symbol: string;
+  direction: string;
+  r_multiple: number;
+  peak_r: number;
+  bars_held: number;
+  entry_regime: string;
+  current_regime: string;
+  unrealized_pnl: number;
+  sl?: number | null;
+  volume?: number;
+  would_close: string[];
+  would_partial: string[];
+  would_modify_sl: string[];
+  keep_open: string[];
+  watch: string[];
 }
 
 export interface LastCycleResponse {
@@ -561,6 +607,10 @@ export interface LastCycleResponse {
   decisions: CycleDecision[];
   agent_votes: AgentVote[];
   skip_summary?: Record<string, number>;
+  cycle_events?: CycleEvent[];
+  position_monitor?: PositionMonitor[];
+  last_cycle_at?: string | null;
+  next_cycle_at?: string | null;
 }
 
 export interface RiskViolation {
@@ -837,20 +887,86 @@ export function mapLastCycleResponse(raw: {
   decisions?: Array<Record<string, unknown>>;
   agent_votes?: Array<Record<string, unknown>>;
   skip_summary?: Record<string, number>;
+  cycle_events?: Array<Record<string, unknown>>;
+  position_monitor?: Array<Record<string, unknown>>;
+  last_cycle_at?: string | null;
+  next_cycle_at?: string | null;
 }): LastCycleResponse {
+  const mapMonitor = (m: Record<string, unknown>): PositionMonitor => ({
+    ticket: Number(m.ticket ?? 0),
+    symbol: String(m.symbol ?? ""),
+    direction: String(m.direction ?? ""),
+    r_multiple: Number(m.r_multiple ?? 0),
+    peak_r: Number(m.peak_r ?? 0),
+    bars_held: Number(m.bars_held ?? 0),
+    entry_regime: String(m.entry_regime ?? ""),
+    current_regime: String(m.current_regime ?? ""),
+    unrealized_pnl: Number(m.unrealized_pnl ?? 0),
+    sl: m.sl as number | null | undefined,
+    volume: m.volume != null ? Number(m.volume) : undefined,
+    would_close: (m.would_close as string[]) ?? [],
+    would_partial: (m.would_partial as string[]) ?? [],
+    would_modify_sl: (m.would_modify_sl as string[]) ?? [],
+    keep_open: (m.keep_open as string[]) ?? [],
+    watch: (m.watch as string[]) ?? [],
+  });
+
   return {
     symbols_processed: Number(raw.symbols_processed ?? 0),
     symbols_attempted: Number(raw.symbols_attempted ?? raw.symbols_processed ?? 0),
     agent_votes: mapAgentVotes(raw.agent_votes),
     skip_summary: raw.skip_summary,
+    cycle_events: (raw.cycle_events ?? []).map((e) => ({
+      type: String(e.type ?? ""),
+      symbol: String(e.symbol ?? ""),
+      direction: e.direction ? String(e.direction) : undefined,
+      reason: e.reason ? String(e.reason) : undefined,
+      ticket: e.ticket != null ? Number(e.ticket) : undefined,
+      timestamp: e.timestamp ? String(e.timestamp) : undefined,
+      confidence: e.confidence != null ? Number(e.confidence) : undefined,
+      consensus_agreeing:
+        e.consensus_agreeing != null ? Number(e.consensus_agreeing) : undefined,
+      consensus_required:
+        e.consensus_required != null ? Number(e.consensus_required) : undefined,
+      size: e.size != null ? Number(e.size) : undefined,
+      closed_volume: e.closed_volume != null ? Number(e.closed_volume) : undefined,
+    })),
+    position_monitor: (raw.position_monitor ?? []).map(mapMonitor),
+    last_cycle_at: raw.last_cycle_at ?? null,
+    next_cycle_at: raw.next_cycle_at ?? null,
     decisions: (raw.decisions ?? []).map((d) => ({
       symbol: String(d.symbol ?? ""),
       action: String(d.direction ?? d.action ?? "HOLD"),
       executed:
-        d.status === "executed" || d.status === "simulated" || Boolean(d.executed),
+        d.status === "ok" ||
+        d.status === "executed" ||
+        d.status === "simulated" ||
+        d.scan_stage === "executed" ||
+        Boolean(d.executed),
+      status: d.status ? String(d.status) : undefined,
       reason: String(d.skip_reason ?? d.reason ?? d.reasoning ?? ""),
+      scan_stage: d.scan_stage ? String(d.scan_stage) : undefined,
+      regime: d.regime ? String(d.regime) : undefined,
+      session: d.session ? String(d.session) : undefined,
+      symbol_tier: d.symbol_tier ? String(d.symbol_tier) : undefined,
+      consensus_required:
+        d.consensus_required != null ? Number(d.consensus_required) : undefined,
+      consensus_agreeing:
+        d.consensus_agreeing != null ? Number(d.consensus_agreeing) : undefined,
+      agreeing_agents: (d.agreeing_agents as string[]) ?? undefined,
+      min_confidence_required:
+        d.min_confidence_required != null
+          ? Number(d.min_confidence_required)
+          : undefined,
+      orchestrator_confidence:
+        d.orchestrator_confidence != null
+          ? Number(d.orchestrator_confidence)
+          : d.confidence != null
+            ? Number(d.confidence)
+            : undefined,
+      event_gate: d.event_gate ? String(d.event_gate) : undefined,
       features_summary: d.features
-        ? `ADX ${(d.features as Record<string, number>).adx?.toFixed?.(1)} · RSI ${(d.features as Record<string, number>).rsi_14?.toFixed?.(1)}`
+        ? `ADX ${(d.features as Record<string, number>).adx?.toFixed?.(1)} · RSI ${(d.features as Record<string, number>).rsi_14?.toFixed?.(1)} · ATR ${(d.features as Record<string, number>).atr_14?.toFixed?.(5)}`
         : undefined,
       orchestrator_output: d.reasoning ? String(d.reasoning) : undefined,
       agent_votes: mapAgentVotes(d.agent_votes as Array<Record<string, unknown>>),
@@ -890,6 +1006,7 @@ function mapPosition(raw: Record<string, unknown>): Position {
     opened_at: String(raw.time ?? raw.opened_at ?? ""),
     notional,
     contract_size: contractSize,
+    monitor: raw.monitor as PositionMonitor | undefined,
   };
 }
 
@@ -976,11 +1093,31 @@ export const api = {
       positions: Array<Record<string, unknown>>;
       total_exposure?: number;
       total_unrealized_pnl?: number;
+      position_monitor?: Array<Record<string, unknown>>;
     }>("/positions");
+    const mapMonitor = (m: Record<string, unknown>): PositionMonitor => ({
+      ticket: Number(m.ticket ?? 0),
+      symbol: String(m.symbol ?? ""),
+      direction: String(m.direction ?? ""),
+      r_multiple: Number(m.r_multiple ?? 0),
+      peak_r: Number(m.peak_r ?? 0),
+      bars_held: Number(m.bars_held ?? 0),
+      entry_regime: String(m.entry_regime ?? ""),
+      current_regime: String(m.current_regime ?? ""),
+      unrealized_pnl: Number(m.unrealized_pnl ?? 0),
+      sl: m.sl as number | null | undefined,
+      volume: m.volume != null ? Number(m.volume) : undefined,
+      would_close: (m.would_close as string[]) ?? [],
+      would_partial: (m.would_partial as string[]) ?? [],
+      would_modify_sl: (m.would_modify_sl as string[]) ?? [],
+      keep_open: (m.keep_open as string[]) ?? [],
+      watch: (m.watch as string[]) ?? [],
+    });
     return {
       positions: raw.positions.map(mapPosition),
       total_exposure: raw.total_exposure,
       total_unrealized_pnl: raw.total_unrealized_pnl,
+      position_monitor: (raw.position_monitor ?? []).map(mapMonitor),
     };
   },
 

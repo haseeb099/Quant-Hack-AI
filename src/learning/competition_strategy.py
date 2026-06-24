@@ -6,6 +6,7 @@ import json
 import logging
 from functools import lru_cache
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -132,6 +133,143 @@ class CompetitionStrategy:
         if symbol in TIER_B_SYMBOLS:
             return "B"
         return "C"
+
+    def _confluence_size_boost(
+        self,
+        symbol: str,
+        direction: str,
+        confidence: float,
+        signals: list[Any],
+        cfg: dict[str, Any],
+        *,
+        counts_as_technical: Callable[[Any], bool],
+        default_symbols: frozenset[str],
+    ) -> dict[str, float] | None:
+        if direction == "HOLD" or not cfg.get("enabled"):
+            return None
+
+        allowed = set(cfg.get("symbols") or default_symbols)
+        if symbol not in allowed:
+            return None
+
+        min_conf = float(cfg.get("min_confidence", 0.85))
+        min_consensus = int(cfg.get("min_consensus_agents", 3))
+        min_technical = int(cfg.get("require_technical_agents", 2))
+        if confidence < min_conf:
+            return None
+
+        agreeing = [
+            s for s in signals
+            if getattr(s, "is_actionable", False)
+            and getattr(getattr(s, "direction", None), "value", None) == direction
+        ]
+        if len(agreeing) < min_consensus:
+            return None
+
+        technical_agreeing = sum(1 for s in agreeing if counts_as_technical(s))
+        if technical_agreeing < min_technical:
+            return None
+
+        if cfg.get("require_trend_surfer_or_ml", True):
+            has_anchor = any(
+                getattr(s, "agent_name", "") in ("trend_surfer", "ml_signal")
+                for s in agreeing
+            )
+            if not has_anchor:
+                return None
+
+        src_max_fx = cfg.get("max_fx_lots")
+        src_max_crypto = cfg.get("max_crypto_lots")
+        src_max_metal = cfg.get("max_metal_lots")
+        return {
+            "boost_tier": str(cfg.get("boost_tier", "confluence")),
+            "orchestrator_scale_mult": float(cfg.get("orchestrator_scale_mult", 1.42)),
+            "max_risk_pct_mult": float(cfg.get("max_risk_pct_mult", 1.38)),
+            "max_risk_pct_ceiling": float(cfg.get("max_risk_pct_ceiling", 0.021)),
+            "max_fx_lots": float(src_max_fx) if src_max_fx is not None else None,
+            "max_crypto_lots": float(src_max_crypto) if src_max_crypto is not None else None,
+            "max_metal_lots": float(src_max_metal) if src_max_metal is not None else None,
+            "fx_min_lot_bump_risk_pct": float(cfg.get("fx_min_lot_bump_risk_pct", 0.0075)),
+            "crypto_min_lot_bump_risk_pct": float(cfg.get("crypto_min_lot_bump_risk_pct", 0.0085)),
+            "metal_min_lot_bump_risk_pct": float(cfg.get("metal_min_lot_bump_risk_pct", 0.0065)),
+        }
+
+    def tier_a_plus_size_boost(
+        self,
+        symbol: str,
+        direction: str,
+        confidence: float,
+        signals: list[Any],
+        live_filters: dict[str, Any],
+        *,
+        counts_as_technical: Callable[[Any], bool],
+    ) -> dict[str, float] | None:
+        """Return sizing multipliers when tier-A symbol hits elite A+ confluence."""
+        cfg = dict(live_filters.get("tier_a_plus_size_boost") or {})
+        cfg.setdefault("boost_tier", "tier_a_plus")
+        return self._confluence_size_boost(
+            symbol,
+            direction,
+            confidence,
+            signals,
+            cfg,
+            counts_as_technical=counts_as_technical,
+            default_symbols=TIER_A_SYMBOLS,
+        )
+
+    def audit_winner_size_boost(
+        self,
+        symbol: str,
+        direction: str,
+        confidence: float,
+        signals: list[Any],
+        live_filters: dict[str, Any],
+        *,
+        counts_as_technical: Callable[[Any], bool],
+    ) -> dict[str, float] | None:
+        """Moderate size boost on proven audit-winner pairs with 2-agent confluence."""
+        cfg = dict(live_filters.get("audit_winner_size_boost") or {})
+        cfg.setdefault("boost_tier", "audit_winner")
+        winners = frozenset(live_filters.get("audit_winner_symbols") or [])
+        return self._confluence_size_boost(
+            symbol,
+            direction,
+            confidence,
+            signals,
+            cfg,
+            counts_as_technical=counts_as_technical,
+            default_symbols=winners,
+        )
+
+    def resolve_size_boost(
+        self,
+        symbol: str,
+        direction: str,
+        confidence: float,
+        signals: list[Any],
+        live_filters: dict[str, Any],
+        *,
+        counts_as_technical: Callable[[Any], bool],
+    ) -> dict[str, float] | None:
+        """Prefer elite tier-A A+ boost, else audit-winner boost."""
+        elite = self.tier_a_plus_size_boost(
+            symbol,
+            direction,
+            confidence,
+            signals,
+            live_filters,
+            counts_as_technical=counts_as_technical,
+        )
+        if elite is not None:
+            return elite
+        return self.audit_winner_size_boost(
+            symbol,
+            direction,
+            confidence,
+            signals,
+            live_filters,
+            counts_as_technical=counts_as_technical,
+        )
 
     def min_consensus_for_symbol(
         self,

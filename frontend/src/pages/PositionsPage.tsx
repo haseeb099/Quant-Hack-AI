@@ -22,7 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { api, queryKeys, positionNotional, type Position } from "@/lib/api";
+import { api, queryKeys, positionNotional, type Position, type PositionMonitor } from "@/lib/api";
 import {
   formatCurrency,
   formatTimestamp,
@@ -68,6 +68,9 @@ export function PositionsPage() {
   });
 
   const positions = data?.positions ?? [];
+  const monitors: PositionMonitor[] =
+    data?.position_monitor ??
+    positions.map((p) => p.monitor).filter((m): m is PositionMonitor => m != null);
   const totalPnl =
     data?.total_unrealized_pnl ??
     positions.reduce((sum, p) => sum + p.unrealized_pnl, 0);
@@ -138,6 +141,19 @@ export function PositionsPage() {
           valueClassName={pnlColorClass(totalPnl)}
         />
       </div>
+
+      {monitors.length > 0 && (
+        <Card className="bg-panel border-border/60">
+          <CardHeader>
+            <CardTitle>Why open / why close</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            {monitors.map((m) => (
+              <PositionMonitorPanel key={m.ticket} monitor={m as PositionMonitor} />
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       <Card className="bg-panel border-border/60">
         <CardHeader>
@@ -247,6 +263,85 @@ export function PositionsPage() {
           </div>
         </SheetContent>
       </Sheet>
+    </div>
+  );
+}
+
+function PositionMonitorPanel({ monitor: m }: { monitor: PositionMonitor }) {
+  return (
+    <div className="rounded-lg border border-border/60 p-4">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className="font-mono font-semibold">{m.symbol}</span>
+        <Badge variant="outline">{m.direction}</Badge>
+        <span className="text-xs text-muted-foreground">#{m.ticket}</span>
+        <Badge
+          variant={m.r_multiple >= 0 ? "signal" : "destructive"}
+          className="font-mono"
+        >
+          {m.r_multiple >= 0 ? "+" : ""}
+          {m.r_multiple.toFixed(2)}R
+        </Badge>
+        <span className="text-xs text-muted-foreground">
+          peak {m.peak_r.toFixed(2)}R · {m.bars_held} M15 bars · {m.entry_regime}
+        </span>
+      </div>
+      {m.would_close.length > 0 ? (
+        <div className="mb-2">
+          <p className="text-xs font-medium uppercase text-destructive">
+            Closing this cycle
+          </p>
+          {m.would_close.map((r) => (
+            <p key={r} className="text-sm text-destructive">
+              {r}
+            </p>
+          ))}
+        </div>
+      ) : (
+        <>
+          {m.would_partial.length > 0 && (
+            <div className="mb-2">
+              <p className="text-xs font-medium uppercase text-warning">Partial take</p>
+              {m.would_partial.map((r) => (
+                <p key={r} className="text-sm text-warning">
+                  {r}
+                </p>
+              ))}
+            </div>
+          )}
+          {m.would_modify_sl.length > 0 && (
+            <div className="mb-2">
+              <p className="text-xs font-medium uppercase text-primary">SL update</p>
+              {m.would_modify_sl.map((r) => (
+                <p key={r} className="text-sm text-primary">
+                  {r}
+                </p>
+              ))}
+            </div>
+          )}
+          {m.keep_open.length > 0 && (
+            <div className="mb-2">
+              <p className="text-xs font-medium uppercase text-muted-foreground">
+                Why still open
+              </p>
+              <ul className="list-inside list-disc text-sm text-muted-foreground">
+                {m.keep_open.map((r) => (
+                  <li key={r}>{r}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+      {m.watch.length > 0 && (
+        <div>
+          <p className="text-xs font-medium uppercase text-muted-foreground">Risk watch</p>
+          <ul className="list-inside list-disc text-sm text-muted-foreground">
+            {m.watch.map((r) => (
+              <li key={r}>{r}</li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

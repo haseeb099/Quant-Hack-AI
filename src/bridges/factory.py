@@ -42,7 +42,7 @@ def create_live_connector() -> Connector:
         return connector
 
     if mode == "zmq":
-        connector = ZeroMQConnector()
+        connector = ZeroMQConnector(timeout_ms=45000)
         if not connector.connect():
             raise RuntimeError(f"ZeroMQ bridge failed: {connector.last_error}")
         return connector
@@ -56,7 +56,7 @@ def create_live_connector() -> Connector:
 
     os.environ.setdefault("ZMQ_VERIFY_RETRIES", "3")
     os.environ.setdefault("ZMQ_WARMUP_SEC", "2.0")
-    zmq = ZeroMQConnector(timeout_ms=10000)
+    zmq = ZeroMQConnector(timeout_ms=45000)
     if zmq.connect():
         logger.info("Using ZeroMQ bridge for live trading")
         return zmq

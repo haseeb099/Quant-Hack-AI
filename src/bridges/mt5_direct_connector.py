@@ -38,19 +38,25 @@ def _mt5_symbol(symbol: str) -> str:
     return symbol.replace("/", "").upper()
 
 
+def _terminal_allows_trading(term: Any | None) -> bool:
+    if term is None:
+        return False
+    if not bool(getattr(term, "trade_allowed", False)):
+        return False
+    if bool(getattr(term, "tradeapi_disabled", True)):
+        return False
+    return True
+
+
 def _account_trade_allowed(acc: Any, term: Any | None = None) -> bool:
-    """Require account permission; terminal AutoTrading is advisory for Python API."""
+    """Account + terminal must allow execution (Python API / Algo Trading)."""
     if acc is None:
         return False
     if not bool(getattr(acc, "trade_allowed", False)):
         return False
     if hasattr(acc, "trade_expert") and not bool(getattr(acc, "trade_expert", True)):
         return False
-    if term is not None and not bool(getattr(term, "trade_allowed", False)):
-        logger.debug(
-            "MT5 toolbar AutoTrading reports OFF — account API still allows trading",
-        )
-    return True
+    return _terminal_allows_trading(term)
 
 
 class Mt5DirectConnector:
@@ -105,7 +111,8 @@ class Mt5DirectConnector:
         self._last_error = ""
         if self._trade_disabled:
             self._last_error = (
-                "Trading disabled on account — check MT5 login and broker permissions"
+                "Algorithmic trading disabled in MT5 — click Algo Trading (green) "
+                "and allow Python API in Tools → Options → Expert Advisors"
             )
             logger.warning(self._last_error)
         else:
@@ -312,11 +319,18 @@ class Mt5DirectConnector:
     ) -> dict[str, Any]:
         if not self._connected:
             return {"status": "simulated", "symbol": symbol, "direction": direction, "volume": volume}
+
+        term = self._mt5.terminal_info()
+        acc = self._mt5.account_info()
+        self._trade_disabled = not _account_trade_allowed(acc, term)
         if self._trade_disabled:
-            return {
-                "status": "error",
-                "message": "Algorithmic trading disabled in MT5 — enable Algo Trading toolbar button",
-            }
+            if term is not None and not bool(getattr(term, "trade_allowed", False)):
+                msg = "Enable Algo Trading in MT5 toolbar (button must be green)"
+            elif term is not None and bool(getattr(term, "tradeapi_disabled", True)):
+                msg = "Enable algorithmic trading via Python API in MT5 Expert Advisors settings"
+            else:
+                msg = "Algorithmic trading disabled in MT5"
+            return {"status": "error", "message": msg}
 
         mt5 = self._mt5
         mt5_symbol = _mt5_symbol(symbol)

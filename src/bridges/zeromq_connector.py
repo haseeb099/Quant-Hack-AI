@@ -16,12 +16,13 @@ from src.bridges.positions_snapshot import PositionsSnapshot
 
 logger = logging.getLogger(__name__)
 
-FILL_RECOVERY_POLL_SEC = 0.4
-FILL_RECOVERY_POLLS = 5
+FILL_RECOVERY_POLL_SEC = float(os.getenv("ZMQ_FILL_RECOVERY_POLL_SEC", "0.5"))
+FILL_RECOVERY_POLLS = int(os.getenv("ZMQ_FILL_RECOVERY_POLLS", "20"))
 VOLUME_EPS = 1e-4
 
 DEFAULT_TIMEOUT_MS = 10000
 DATA_TIMEOUT_MS = int(os.getenv("ZMQ_DATA_TIMEOUT_MS", "15000"))
+TRADE_TIMEOUT_MS = int(os.getenv("ZMQ_TRADE_TIMEOUT_MS", "60000"))
 MAX_RECONNECT_ATTEMPTS = 3
 TRADE_MAX_RETRIES = 3
 ZMQ_WARMUP_SEC = float(os.getenv("ZMQ_WARMUP_SEC", "2.0"))
@@ -242,6 +243,36 @@ class ZeroMQConnector:
         with self._io_lock:
             return self._send_command_unlocked(command, drain_stale=drain_stale)
 
+    def _drain_stale_before_trade(self) -> int:
+        """Clear queued DATA/ACCOUNT responses so TRADE confirmations are not starved."""
+        import zmq
+
+        if not self._sockets_ready:
+            return 0
+        original = self._pull_socket.getsockopt(zmq.RCVTIMEO)
+        self._pull_socket.setsockopt(zmq.RCVTIMEO, 30)
+        drained = 0
+        try:
+            for _ in range(64):
+                try:
+                    response = self._pull_socket.recv_string()
+                    try:
+                        result = json.loads(response)
+                    except json.JSONDecodeError:
+                        drained += 1
+                        continue
+                    if result.get("action") == "TRADE":
+                        logger.warning(
+                            "Discarded stale TRADE response before new trade: %s",
+                            result.get("type"),
+                        )
+                    drained += 1
+                except zmq.Again:
+                    break
+        finally:
+            self._pull_socket.setsockopt(zmq.RCVTIMEO, original)
+        return drained
+
     def _send_command_unlocked(
         self,
         command: dict[str, Any],
@@ -255,8 +286,16 @@ class ZeroMQConnector:
             # Never discard TRADE confirmations — timeouts + drain caused duplicate fills.
             drain_stale = expected_action != "TRADE"
 
+        original_rcv_timeout = self._pull_socket.getsockopt(zmq.RCVTIMEO)
+        trade_timeout = max(self.timeout_ms, TRADE_TIMEOUT_MS)
+        if expected_action == "TRADE":
+            drained = self._drain_stale_before_trade()
+            if drained:
+                logger.info("Drained %d stale ZMQ messages before TRADE", drained)
+            self._pull_socket.setsockopt(zmq.RCVTIMEO, trade_timeout)
+
         def _recv_matching() -> dict[str, Any]:
-            max_reads = 16 if expected_action else 1
+            max_reads = 32 if expected_action == "TRADE" else (16 if expected_action else 1)
             for read in range(max_reads):
                 try:
                     response = self._pull_socket.recv_string()
@@ -295,6 +334,9 @@ class ZeroMQConnector:
                 "message": str(exc),
                 "action": expected_action,
             }
+        finally:
+            if expected_action == "TRADE":
+                self._pull_socket.setsockopt(zmq.RCVTIMEO, original_rcv_timeout)
 
     def _is_retryable(self, result: dict[str, Any]) -> bool:
         if result.get("status") == "ok":
