@@ -77,7 +77,7 @@ class PeerMonitor:
         """Return sizing multiplier based on crowd behavior."""
         sentiment = self.state.crowd_sentiment
         if sentiment == "risk_on" and self.state.relative_performance < 0:
-            return 1.1  # catch up when crowd is aggressive and we're behind
+            return 1.30  # catch up when crowd is aggressive and we're behind
         if sentiment == "risk_off" and self.state.relative_performance > 0:
             return 0.9  # protect gains when crowd retreats
         return 1.0
@@ -86,10 +86,12 @@ class PeerMonitor:
         """Boost sizing when trailing peers during return rounds."""
         if dd_tier != "normal":
             return 1.0
-        if self.round_id not in ("round1", "round2"):
+        if self.round_id not in ("round1", "round2", "round3", "finals"):
             return 1.0
         if self.state.relative_performance < -0.03:
-            return 1.15
+            return 1.45
+        if self.state.relative_performance < -0.01:
+            return 1.35
         return 1.0
 
     def should_increase_aggression(self) -> bool:

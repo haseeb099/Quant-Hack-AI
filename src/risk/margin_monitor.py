@@ -38,6 +38,11 @@ class MarginMonitor:
         self.drawdown_cfg = drawdown_cfg or {}
         self._session_start_equity: float | None = None
         self._daily_loss_halt = False
+        self._daily_loss_limit_override: float | None = None
+
+    def set_daily_loss_limit(self, pct: float) -> None:
+        """Phase/filter override for session daily loss halt threshold."""
+        self._daily_loss_limit_override = max(0.0, float(pct))
 
     def reset_session(self, equity: float) -> None:
         self._session_start_equity = equity
@@ -75,12 +80,14 @@ class MarginMonitor:
         conc_hard = self.conc_cfg.get("hard_stop_pct", 0.50)
 
         # Daily loss limit
-        daily_limit = self.drawdown_cfg.get("daily_loss_limit", 0.05)
+        daily_limit = self._daily_loss_limit_override
+        if daily_limit is None:
+            daily_limit = self.drawdown_cfg.get("daily_loss_limit", 0.05)
         if self._session_start_equity and self._session_start_equity > 0:
             daily_loss = (self._session_start_equity - equity) / self._session_start_equity
             if daily_loss >= daily_limit:
                 self._daily_loss_halt = True
-                actions.append("Daily loss 5% — halt new trades")
+                actions.append(f"Daily loss {daily_loss:.1%} — halt new trades (limit {daily_limit:.1%})")
                 block = True
                 size_mult = min(size_mult, 0.25)
             elif daily_loss >= daily_limit * 0.75:

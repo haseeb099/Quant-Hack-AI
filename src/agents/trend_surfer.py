@@ -18,6 +18,7 @@ class TrendSurferAgent(BaseTradingAgent):
         target_mult = cfg.get("target_atr_mult", 3.0)
         pullback_mult = cfg.get("pullback_atr_mult", 1.5)
         require_mtf = cfg.get("require_mtf_alignment", True)
+        require_h4 = cfg.get("require_h4_alignment", True)
 
         direction = Direction.HOLD
         confidence = 0.0
@@ -27,7 +28,7 @@ class TrendSurferAgent(BaseTradingAgent):
         h1_bear = features.extras.get("h1_trend_bear")
         h4_bull = features.extras.get("h4_trend_bull")
         h4_bear = features.extras.get("h4_trend_bear")
-        if require_mtf and h1_bull is not None and h4_bull is not None:
+        if require_mtf and require_h4 and h1_bull is not None and h4_bull is not None:
             if not (h1_bull and h4_bull) and not (h1_bear and h4_bear):
                 return AgentSignal(
                     agent_name=self.name,
@@ -36,7 +37,16 @@ class TrendSurferAgent(BaseTradingAgent):
                     confidence=0.0,
                     reasoning="MTF misalignment — H1/H4 trends not aligned",
                 )
-        elif h1_bull is not None or h4_bull is not None:
+        elif require_mtf and not require_h4 and h1_bull is not None:
+            if not h1_bull and not h1_bear:
+                return AgentSignal(
+                    agent_name=self.name,
+                    symbol=features.symbol,
+                    direction=Direction.HOLD,
+                    confidence=0.0,
+                    reasoning="H1 trend bias unclear",
+                )
+        elif require_mtf and (h1_bull is not None or h4_bull is not None):
             bull_ok = (h1_bull is True or h4_bull is True)
             bear_ok = (h1_bear is True or h4_bear is True)
             if not bull_ok and not bear_ok:
@@ -51,6 +61,7 @@ class TrendSurferAgent(BaseTradingAgent):
         volatile_mode = features.regime in (Regime.VOLATILE, Regime.TRENDING)
         trending_mode = features.regime == Regime.TRENDING
         effective_adx = adx_threshold - (3 if volatile_mode else 0)
+        strong_trend = features.adx >= 48
 
         if features.adx > effective_adx:
             pullback_window = features.atr_14 * pullback_mult
@@ -64,8 +75,11 @@ class TrendSurferAgent(BaseTradingAgent):
             ):
                 near_ema = abs(features.close - features.ema_21) <= pullback_window
                 momentum_entry = (
-                    features.adx > effective_adx + 5
-                    and (volatile_mode or trending_mode)
+                    strong_trend
+                    or (
+                        features.adx > effective_adx + (2 if trending_mode else 5)
+                        and (volatile_mode or trending_mode)
+                    )
                 )
                 if not near_ema and not momentum_entry:
                     return AgentSignal(
@@ -104,8 +118,11 @@ class TrendSurferAgent(BaseTradingAgent):
             ):
                 near_ema = abs(features.close - features.ema_21) <= pullback_window
                 momentum_entry = (
-                    features.adx > effective_adx + 5
-                    and (volatile_mode or trending_mode)
+                    strong_trend
+                    or (
+                        features.adx > effective_adx + (2 if trending_mode else 5)
+                        and (volatile_mode or trending_mode)
+                    )
                 )
                 if not near_ema and not momentum_entry:
                     return AgentSignal(

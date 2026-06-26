@@ -113,6 +113,8 @@ class FeatureEngine:
         timeframe: str,
         ohlcv: pd.DataFrame,
         donchian_period: int = 20,
+        adx_period: int = 14,
+        percentile_window: int = 100,
     ) -> FeatureVector:
         df = ohlcv.copy()
         for col in ("open", "high", "low", "close", "volume"):
@@ -127,7 +129,7 @@ class FeatureEngine:
         atr_14_s = _atr(high, low, close, 14)
         atr_50_s = _atr(high, low, close, 50)
         rsi_14_s = _rsi(close, 14)
-        adx_s = _adx(high, low, close, 14)
+        adx_s = _adx(high, low, close, adx_period)
         ema_9 = _ema(close, 9)
         ema_21 = _ema(close, 21)
         ema_50 = _ema(close, 50)
@@ -138,7 +140,7 @@ class FeatureEngine:
         bb_upper = bb_mid + 2 * bb_std
         bb_lower = bb_mid - 2 * bb_std
         bb_width = (bb_upper - bb_lower) / bb_mid.replace(0, np.nan)
-        bb_width_pct = _percentile_rank(bb_width.fillna(0))
+        bb_width_pct = _percentile_rank(bb_width.fillna(0), percentile_window)
 
         donchian_high = high.rolling(donchian_period).max()
         donchian_low = low.rolling(donchian_period).min()
@@ -147,7 +149,7 @@ class FeatureEngine:
         volume_ratio = (volume / vol_avg.replace(0, np.nan)).fillna(1.0)
 
         macd_line, macd_signal, macd_hist = _macd(close)
-        atr_pct = _percentile_rank(atr_14_s.fillna(0))
+        atr_pct = _percentile_rank(atr_14_s.fillna(0), percentile_window)
         squeeze_threshold = 5.0
         bb_squeeze_bars = _count_consecutive_squeeze_bars(bb_width_pct.fillna(50.0), squeeze_threshold)
 
@@ -203,14 +205,21 @@ class FeatureEngine:
         donchian_period: int = 20,
         h1_ohlcv: pd.DataFrame | None = None,
         h4_ohlcv: pd.DataFrame | None = None,
+        adx_period: int = 14,
+        percentile_window: int = 100,
     ) -> dict[str, FeatureVector]:
         out: dict[str, FeatureVector] = {}
-        out["M15"] = self.compute(symbol, "M15", m15_ohlcv, donchian_period=donchian_period)
+        compute_kw = {
+            "donchian_period": donchian_period,
+            "adx_period": adx_period,
+            "percentile_window": percentile_window,
+        }
+        out["M15"] = self.compute(symbol, "M15", m15_ohlcv, **compute_kw)
         h1 = h1_ohlcv if h1_ohlcv is not None else self.resample_ohlcv(m15_ohlcv, TIMEFRAME_FACTORS["H1"])
         h4 = h4_ohlcv if h4_ohlcv is not None else self.resample_ohlcv(m15_ohlcv, TIMEFRAME_FACTORS["H4"])
         min_bars = max(donchian_period, 20)
         if len(h1) >= min_bars:
-            out["H1"] = self.compute(symbol, "H1", h1, donchian_period=donchian_period)
+            out["H1"] = self.compute(symbol, "H1", h1, **compute_kw)
         if len(h4) >= min_bars:
-            out["H4"] = self.compute(symbol, "H4", h4, donchian_period=donchian_period)
+            out["H4"] = self.compute(symbol, "H4", h4, **compute_kw)
         return out

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.agents.base_agent import AgentSignal, Direction, FeatureVector, Regime
-from src.agents.meta_orchestrator import MetaOrchestrator
+from src.agents.meta_orchestrator import MetaOrchestrator, OrchestratorDecision
 
 
 def _features(**overrides) -> FeatureVector:
@@ -105,6 +105,106 @@ def test_ai_decide_falls_back_to_second_provider(monkeypatch: pytest.MonkeyPatch
     assert decision.used_ai is True
     assert decision.direction == Direction.BUY
     assert decision.reasoning == "doubleword fallback"
+
+
+def test_solo_ml_metal_sell_allowed_with_bear_debate() -> None:
+    orch = MetaOrchestrator({"cooldown_minutes": 0, "min_agent_confidence": 0.55}, {})
+    features = _features(symbol="XAU/USD", regime=Regime.TRENDING, adx=42.0)
+    signals = [
+        AgentSignal("ml_signal", "XAU/USD", Direction.SELL, 0.71, reasoning="ml sell"),
+    ]
+    context = {
+        "return_focus": True,
+        "debate_winner": "bear",
+        "debate_confidence": 0.80,
+        "solo_ml_metal_sell_min_confidence": 0.68,
+    }
+    decision = orch._rule_based_decide(features, signals, context)
+    decision = orch._finalize_decision(decision, signals, features, context)
+    assert decision.direction == Direction.SELL
+    assert decision.confidence >= 0.71
+    assert "proven solo ml metal SELL" in decision.reasoning
+
+
+def test_solo_audit_trend_surfer_allowed_in_trending() -> None:
+    orch = MetaOrchestrator({"cooldown_minutes": 0, "min_agent_confidence": 0.55}, {})
+    features = _features(symbol="USD/CAD", regime=Regime.TRENDING, adx=28.0)
+    signals = [
+        AgentSignal("trend_surfer", "USD/CAD", Direction.SELL, 0.74, reasoning="down"),
+    ]
+    context = {
+        "return_focus": True,
+        "audit_winner_symbols": ["USD/CAD", "XAG/USD"],
+        "audit_solo_trend_surfer_min_confidence": 0.72,
+    }
+    decision = orch._rule_based_decide(features, signals, context)
+    decision = orch._finalize_decision(decision, signals, features, context)
+    assert decision.direction == Direction.SELL
+    assert decision.confidence >= 0.74
+    assert "audit-winner solo trend_surfer" in decision.reasoning
+
+
+def test_solo_trend_surfer_still_blocked_in_ranging() -> None:
+    orch = MetaOrchestrator({"cooldown_minutes": 0, "min_agent_confidence": 0.55}, {})
+    features = _features(symbol="USD/CAD", regime=Regime.RANGING, adx=22.0)
+    signals = [
+        AgentSignal("trend_surfer", "USD/CAD", Direction.SELL, 0.74, reasoning="down"),
+    ]
+    context = {
+        "return_focus": True,
+        "audit_winner_symbols": ["USD/CAD", "XAG/USD"],
+        "audit_solo_trend_surfer_min_confidence": 0.72,
+    }
+    decision = orch._rule_based_decide(features, signals, context)
+    decision = orch._finalize_decision(decision, signals, features, context)
+    assert decision.direction == Direction.HOLD
+
+
+def test_ml_metal_sell_anchor_beats_ai_buy_flip() -> None:
+    orch = MetaOrchestrator({"cooldown_minutes": 0, "min_agent_confidence": 0.55}, {})
+    features = _features(symbol="XAU/USD", regime=Regime.TRENDING, adx=42.0)
+    signals = [
+        AgentSignal("ml_signal", "XAU/USD", Direction.SELL, 0.81, reasoning="ml sell"),
+    ]
+    context = {
+        "return_focus": True,
+        "debate_winner": "bear",
+        "debate_confidence": 0.86,
+        "solo_ml_metal_sell_min_confidence": 0.68,
+    }
+    anchor = orch._ml_metal_sell_anchor_decision(features, signals, context)
+    assert anchor is not None
+    assert anchor.direction == Direction.SELL
+    ai_buy = OrchestratorDecision(
+        symbol="XAU/USD",
+        direction=Direction.BUY,
+        confidence=0.69,
+        size_scale=1.0,
+        reasoning="macro risk-off long",
+        agent_votes=signals,
+    )
+    coerced = orch._prefer_winning_anchor(ai_buy, features, signals, context)
+    assert coerced.direction == Direction.SELL
+
+
+def test_audit_winner_dual_anchor_requires_both_agents() -> None:
+    orch = MetaOrchestrator({"cooldown_minutes": 0, "min_agent_confidence": 0.55}, {})
+    features = _features(symbol="USD/CAD", regime=Regime.TRENDING, adx=28.0)
+    signals = [
+        AgentSignal("trend_surfer", "USD/CAD", Direction.SELL, 0.74, reasoning="down"),
+        AgentSignal("ml_signal", "USD/CAD", Direction.SELL, 0.72, reasoning="ml"),
+    ]
+    context = {
+        "return_focus": True,
+        "audit_winner_symbols": ["USD/CAD", "XAG/USD"],
+        "audit_winner_dual_min_adx": 26,
+        "audit_winner_dual_min_confidence": 0.70,
+        "block_direction_in_regimes": {"USD/CAD": {"SELL": ["ranging", "calm"]}},
+    }
+    dual = orch._audit_winner_dual_anchor_decision(features, signals, context)
+    assert dual is not None
+    assert dual.direction == Direction.SELL
+    assert dual.confidence >= 0.70
 
 
 def test_aidecision_validators_clamp_invalid_values(monkeypatch: pytest.MonkeyPatch) -> None:

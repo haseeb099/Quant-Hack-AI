@@ -41,6 +41,7 @@ from src.data.session_filter import SessionFilter
 from src.engine.adaptation_loader import apply_adaptation_to_config, load_adaptation_plan
 from src.engine.config import QuantAIConfig, load_yaml, resolve_phase
 from src.learning.competition_strategy import CompetitionStrategy
+from src.learning.entry_quality import passes_quality_gate, score_entry
 from src.engine.trade_journal import (
     build_tracked_from_mt5_deals,
     closed_tickets_from_jsonl,
@@ -88,6 +89,7 @@ class TradingEngine:
         config: QuantAIConfig,
         simulation: bool = False,
         cycle_minutes: int | None = None,
+        auto_phase: bool = True,
     ) -> None:
         self.config = config
         self.simulation = simulation
@@ -108,6 +110,7 @@ class TradingEngine:
         self.competition_strategy = CompetitionStrategy()
         self.portfolio_heat = PortfolioHeat(self._portfolio_heat_config(1_000_000))
         self.account_profile: AccountProfile | None = None
+        self._auto_phase = auto_phase
         self._cycle_minutes = cycle_minutes if cycle_minutes is not None else config.cycle_minutes()
         self.state_publisher = StatePublisher(cycle_minutes=self._cycle_minutes)
         self._size_multiplier = 1.0
@@ -126,12 +129,15 @@ class TradingEngine:
         self._last_known_equity: float | None = None
         self._cycle_symbols_attempted: int = 0
         self._symbol_cooldown_until: dict[str, datetime] = {}
+        self._momentum_flags: dict[str, datetime] = {}
         self._running = False
         self._fill_overshoot_block = False
         self._fill_undershoot_block = False
         self._fx_shorts_opened_this_cycle = 0
         self._chf_entries_opened_this_cycle = 0
         self._crypto_entries_opened_this_cycle = 0
+        self._runner_entries_opened_this_cycle = 0
+        self._aa_plus_entries_opened_this_cycle = 0
         self._finalized_tickets: set[int] = closed_tickets_from_jsonl(self.trade_logger.jsonl_path)
         self._paused = False
         self._cycle_in_progress = False
@@ -142,6 +148,9 @@ class TradingEngine:
         self._pending_limit_orders: dict[str, dict] = {}
         self._cycle_events: list[dict] = []
         self._position_diagnostics: list[dict] = []
+        self._cycle_diag_equity: float | None = None
+        self._cycle_diag_dd_state = None
+        self._cycle_diag_drawdown_pct: float = 0.0
 
         self._rebuild_runtime_for_phase()
 
@@ -169,7 +178,9 @@ class TradingEngine:
         apply_adaptation_to_config(self.config, adaptation_plan)
 
         agent_weights = {
-            name: float(cfg.get("weight", 0.25))
+            name: float(
+                (phase_rules.get("agent_weights") or {}).get(name, cfg.get("weight", 0.25))
+            )
             for name, cfg in self.config.agents.items()
             if name != "meta_orchestrator"
         }
@@ -450,11 +461,16 @@ class TradingEngine:
 
     def _objective_runtime_overrides(self) -> dict[str, Any]:
         objective = str(self.config.phase_rules.get("objective", "maximize_return"))
+        phase = self.config.current_phase
+        return_push = bool(
+            self.config.phase_rules.get("return_focus")
+            and phase in ("round1", "round2", "round3", "finals")
+        )
         presets: dict[str, dict[str, Any]] = {
             "maximize_return": {
                 "max_entries": int(self.config.phase_rules.get("max_new_entries_per_cycle", 4)),
-                "risk_mult": 1.0,
-                "min_confidence_floor": 0.55,
+                "risk_mult": 1.50 if return_push and phase == "finals" else (1.20 if return_push else 1.0),
+                "min_confidence_floor": 0.54 if return_push and phase == "finals" else 0.55,
             },
             "avoid_elimination": {
                 "max_entries": 2,
@@ -667,9 +683,289 @@ class TradingEngine:
             return int(raw)
         return int(self.config.phase_rules.get("symbol_cooldown_minutes", 0) or 0)
 
+    def _momentum_phases(self) -> set[str]:
+        return {"round1", "round2", "finals"}
+
+    def _momentum_flag_active(self, symbol: str, now: datetime | None = None) -> bool:
+        now = now or datetime.now(timezone.utc)
+        until = self._momentum_flags.get(symbol)
+        if until is None:
+            return False
+        if now >= until:
+            del self._momentum_flags[symbol]
+            return False
+        return True
+
+    def _effective_cooldown_minutes(self, symbol: str, now: datetime | None = None) -> int:
+        phase_rules = self.config.phase_rules
+        if self._momentum_flag_active(symbol, now):
+            return int(phase_rules.get("momentum_cooldown_minutes", 2))
+        return self._symbol_cooldown_minutes()
+
+    def _position_r_multiple(self, ticket: int, pos: dict) -> float | None:
+        tracked = self._open_trades.get(ticket, {})
+        entry = float(tracked.get("entry_price") or pos.get("price_open", 0) or 0)
+        sl = tracked.get("sl")
+        if sl is None:
+            sl = pos.get("sl")
+        sl = float(sl) if sl is not None else 0.0
+        price = float(pos.get("price_current", entry) or entry)
+        direction = str(tracked.get("direction") or pos.get("type", "BUY")).upper()
+        sl_dist = abs(entry - sl) if sl else 0.0
+        if entry <= 0 or sl_dist <= 0:
+            return None
+        if "BUY" in direction or direction in ("LONG", "0"):
+            return (price - entry) / sl_dist
+        return (entry - price) / sl_dist
+
+    def _write_cycle_diagnostics(
+        self,
+        cycle_start: datetime,
+        equity: float,
+        dd_state,
+        drawdown_pct: float,
+    ) -> None:
+        symbols_skipped: dict[str, str] = {}
+        signals_generated: dict[str, dict] = {}
+        trades_opened: list[dict] = []
+        trades_closed: list[dict] = []
+        symbols_evaluated: list[str] = []
+
+        for decision in self._cycle_decisions:
+            sym = decision.get("symbol", "")
+            if sym and sym != "*" and sym not in symbols_evaluated:
+                symbols_evaluated.append(sym)
+            status = decision.get("status", "")
+            if status == "skipped" and sym:
+                symbols_skipped[sym] = str(
+                    decision.get("skip_reason") or decision.get("reasoning") or "skipped"
+                )
+            elif status in ("executed", "simulated", "pending"):
+                trades_opened.append({
+                    "symbol": sym,
+                    "direction": decision.get("direction"),
+                    "confidence": decision.get("confidence"),
+                    "size": decision.get("size"),
+                })
+            direction = decision.get("direction", "HOLD")
+            if direction != "HOLD" and sym and sym != "*":
+                blocked_at = None
+                if status == "skipped":
+                    reason = str(decision.get("skip_reason") or "")
+                    if "confidence" in reason.lower() or "minimum" in reason.lower():
+                        blocked_at = "confidence_floor"
+                    elif "consensus" in reason.lower():
+                        blocked_at = "consensus"
+                    elif "cooldown" in reason.lower():
+                        blocked_at = "cooldown"
+                    else:
+                        blocked_at = "gate"
+                signals_generated[sym] = {
+                    "direction": direction,
+                    "confidence": decision.get("confidence"),
+                    "blocked_at": blocked_at,
+                }
+
+        for event in self._cycle_events:
+            if event.get("type") == "close":
+                trades_closed.append({
+                    "symbol": event.get("symbol"),
+                    "ticket": event.get("ticket"),
+                    "reason": event.get("reason"),
+                })
+            elif event.get("type") == "entry":
+                if not any(t.get("symbol") == event.get("symbol") for t in trades_opened):
+                    trades_opened.append({
+                        "symbol": event.get("symbol"),
+                        "direction": event.get("direction"),
+                        "ticket": event.get("ticket"),
+                    })
+
+        eval_count = len(symbols_evaluated)
+        skip_count = len(symbols_skipped)
+        signal_count = len(signals_generated)
+        open_count = len(trades_opened)
+        hold_count = sum(
+            1 for d in self._cycle_decisions
+            if d.get("direction") == "HOLD" and d.get("status") != "skipped"
+        )
+
+        record = {
+            "timestamp": cycle_start.isoformat(),
+            "phase": self.config.current_phase,
+            "equity": equity,
+            "drawdown_pct": drawdown_pct,
+            "drawdown_tier": dd_state.tier,
+            "symbols_evaluated": symbols_evaluated,
+            "symbols_skipped_why": symbols_skipped,
+            "signals_generated": signals_generated,
+            "trades_opened": trades_opened,
+            "trades_closed": trades_closed,
+        }
+
+        log_path = Path("logs/cycle_diagnostics.jsonl")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+
+        print(
+            f"[CYCLE] eq=${equity:,.0f} dd={drawdown_pct:.1%} | "
+            f"eval={eval_count} skip={skip_count} signal={signal_count} "
+            f"open={open_count} hold={hold_count}",
+            flush=True,
+        )
+
+    def _sync_finals_loss_limits(self) -> None:
+        if self.config.current_phase != "finals":
+            self.margin_monitor.set_daily_loss_limit(
+                float(self.config.risk.get("drawdown", {}).get("daily_loss_limit", 0.05)),
+            )
+            return
+        lf = self._live_filters or {}
+        phase_limit = self.config.phase_rules.get("daily_loss_limit_pct")
+        limit = lf.get("daily_loss_halt_pct", phase_limit)
+        if limit is not None:
+            self.margin_monitor.set_daily_loss_limit(float(limit))
+
+    def _open_loser_count(self) -> int:
+        return sum(
+            1 for p in self.connector.get_positions()
+            if float(p.get("profit", 0) or 0) < 0
+        )
+
+    def _finals_loss_guard_blocks_entries(self) -> tuple[bool, str]:
+        if self.config.current_phase != "finals":
+            return False, ""
+        lf = self._live_filters or {}
+        if not lf.get("loss_guard_enabled", True):
+            return False, ""
+        max_losers = int(lf.get("max_open_losers_before_halt", 4))
+        losers = self._open_loser_count()
+        if losers >= max_losers:
+            return True, f"Loss guard: {losers} open losers (max {max_losers}) — entries paused"
+        return False, ""
+
+    def _intraday_loss_size_mult(self) -> float:
+        lf = self._live_filters or {}
+        if not lf.get("loss_guard_enabled", True):
+            return 1.0
+        start = self.margin_monitor._session_start_equity
+        if not start or start <= 0:
+            return 1.0
+        account = self.connector.get_account_info()
+        equity = float(account.get("equity", 0) or 0)
+        if equity <= 0:
+            return 1.0
+        loss_pct = max(0.0, (start - equity) / start)
+        warn = float(lf.get("daily_loss_warn_pct", 0.015))
+        if loss_pct >= warn:
+            return float(lf.get("intraday_loss_size_mult", 0.70))
+        return 1.0
+
     @staticmethod
     def _normalize_symbol(symbol: str) -> str:
         return symbol.replace("/", "").upper()
+
+    def _blocked_symbols(self) -> set[str]:
+        phase_rules = self.config.phase_rules
+        return set(self._live_filters.get("blocked_symbols", [])) | set(
+            phase_rules.get("blocked_symbols", []),
+        )
+
+    def _close_positions_on_blocked_symbols(self) -> None:
+        """Close carry-over positions on symbols blocked for the active phase."""
+        if self.simulation:
+            return
+        blocked = self._blocked_symbols()
+        if not blocked:
+            return
+        blocked_norm = {self._normalize_symbol(s) for s in blocked}
+        pos_snapshot = self._positions_snapshot()
+        if not pos_snapshot.trusted:
+            return
+        account = self.connector.get_account_info()
+        equity = float(account.get("equity", 0) or 0)
+        for pos in pos_snapshot.positions:
+            sym = str(pos.get("symbol", ""))
+            if self._normalize_symbol(sym) not in blocked_norm:
+                continue
+            ticket = pos.get("ticket")
+            volume = float(pos.get("volume", 0))
+            if not ticket or volume <= 0:
+                continue
+            logger.warning(
+                "Closing blocked-symbol position %s ticket=%s (phase policy)",
+                sym,
+                ticket,
+            )
+            self._log_cycle_event(
+                "blocked_symbol_close",
+                sym,
+                reason="Symbol blocked for current phase — closing carry-over",
+                ticket=int(ticket),
+            )
+            result = self.connector.close_position(ticket)
+            self._log_position_reconcile(ticket, volume, "CLOSE", result)
+            if self._close_position_confirmed(ticket, volume, result):
+                self._finalize_trade(ticket, pos, equity)
+                self.position_manager.on_close(ticket)
+
+    def _close_stub_positions_for_resize(self) -> None:
+        """Close min-lot stub positions so finals can re-enter at full aggressive size."""
+        if self.simulation or self.config.current_phase != "finals":
+            return
+        if not self.config.phase_rules.get("return_focus"):
+            return
+        lf = self._live_filters or {}
+        if not lf.get("close_stub_positions", True):
+            return
+        max_notional_pct = float(lf.get("stub_max_notional_pct_equity", 0.0015))
+        pos_snapshot = self._positions_snapshot()
+        if not pos_snapshot.trusted:
+            return
+        account = self.connector.get_account_info()
+        equity = float(account.get("equity", 0) or 0)
+        if equity <= 0:
+            return
+        cap_notional = equity * max_notional_pct
+        for pos in pos_snapshot.positions:
+            sym = str(pos.get("symbol", ""))
+            ticket = pos.get("ticket")
+            volume = float(pos.get("volume", 0))
+            if not ticket or volume <= 0:
+                continue
+            specs = self._get_symbol_specs(sym)
+            if not specs:
+                continue
+            price = float(pos.get("price_current") or pos.get("price_open") or 0)
+            if price <= 0:
+                continue
+            notional = position_notional(volume, specs["contract_size"], price)
+            vol_min = float(specs["volume_min"])
+            at_min_lot = volume <= vol_min * 1.05
+            if not at_min_lot:
+                continue
+            if notional > cap_notional:
+                continue
+            logger.warning(
+                "Closing stub position %s ticket=%s vol=%.4f notional=%.2f (<%0.2f%% equity) for resize",
+                sym,
+                ticket,
+                volume,
+                notional,
+                max_notional_pct * 100,
+            )
+            self._log_cycle_event(
+                "stub_position_close",
+                sym,
+                reason="Stub/min lot — freeing symbol for full-size finals entry",
+                ticket=int(ticket),
+            )
+            result = self.connector.close_position(ticket)
+            self._log_position_reconcile(ticket, volume, "CLOSE", result)
+            if self._close_position_confirmed(ticket, volume, result):
+                self._finalize_trade(ticket, pos, equity)
+                self.position_manager.on_close(ticket)
 
     def _positions_snapshot(self):
         getter = getattr(self.connector, "get_positions_snapshot", None)
@@ -708,6 +1004,9 @@ class TradingEngine:
             live_filters.get("min_consensus_agents")
             or phase_rules.get("min_consensus_agents", 1)
         )
+        symbol_overrides = live_filters.get("symbol_min_consensus_agents") or {}
+        if symbol in symbol_overrides:
+            return int(symbol_overrides[symbol])
         if self._is_fx_symbol(symbol):
             return int(live_filters.get("fx_min_consensus_agents", default))
         if self._is_crypto_symbol(symbol):
@@ -1101,10 +1400,23 @@ class TradingEngine:
             "volume_max": info["volume_max"],
         }
 
+    def _prefer_mt5_market_data(self) -> bool:
+        """Use MT5 Python API for bars/specs so the ZMQ EA queue stays clear for TRADE."""
+        if self.simulation:
+            return False
+        if isinstance(self.connector, ZeroMQConnector):
+            return True
+        return os.getenv("OHLCV_PREFER_MT5", "").lower() in ("1", "true", "yes")
+
     def _get_symbol_info(self, symbol: str) -> dict[str, float] | None:
         cached = self._symbol_info_cache.get(symbol)
         if cached:
             return cached
+
+        if not self.simulation and self._prefer_mt5_market_data():
+            info = self._get_symbol_info_mt5(symbol)
+            if info:
+                return info
 
         if not self.simulation:
             info = self.connector.get_symbol_info(symbol)
@@ -1112,6 +1424,9 @@ class TradingEngine:
                 self._symbol_info_cache[symbol] = info
                 return info
 
+        return self._get_symbol_info_mt5(symbol)
+
+    def _get_symbol_info_mt5(self, symbol: str) -> dict[str, float] | None:
         try:
             import MetaTrader5 as mt5
 
@@ -1293,6 +1608,8 @@ class TradingEngine:
 
     def _maybe_refresh_phase(self) -> None:
         """Auto-switch competition phase by BST schedule."""
+        if not self._auto_phase:
+            return
         resolved = resolve_phase(auto=True)
         if resolved != self.config.current_phase:
             old_phase = self.config.current_phase
@@ -1315,12 +1632,15 @@ class TradingEngine:
             self.sharpe_guard.reset_round(equity if equity > 0 else initial_equity)
             self.sharpe_guard.set_phase(resolved)
             self._symbol_cooldown_until.clear()
+            self._momentum_flags.clear()
             self._pending_limit_orders.clear()
             self._prev_dd_tier = "normal"
             self._apply_phase_filter_pack(resolved)
             self._live_filters = self._merge_objective_filters(
                 self._load_live_competition_filters(resolved),
             )
+            self._sync_finals_loss_limits()
+            self._close_positions_on_blocked_symbols()
 
             self.trade_logger.log(
                 symbol="*",
@@ -1919,9 +2239,14 @@ class TradingEngine:
         self._cycle_events = []
         self._position_diagnostics = []
         self._cycle_symbols_attempted = 0
+        self._cycle_diag_equity = None
+        self._cycle_diag_dd_state = None
+        self._cycle_diag_drawdown_pct = 0.0
         self._fx_shorts_opened_this_cycle = 0
         self._chf_entries_opened_this_cycle = 0
         self._crypto_entries_opened_this_cycle = 0
+        self._runner_entries_opened_this_cycle = 0
+        self._aa_plus_entries_opened_this_cycle = 0
         self._cycle_in_progress = True
         try:
             if not self.compliance.record_api_request():
@@ -1933,6 +2258,7 @@ class TradingEngine:
             self._live_filters = self._merge_objective_filters(
                 self._load_live_competition_filters(self.config.current_phase),
             )
+            self._sync_finals_loss_limits()
             self._sync_position_manager_config()
             if not self.simulation:
                 self._refresh_ohlcv_meta_all_symbols()
@@ -1968,6 +2294,9 @@ class TradingEngine:
                     self._entries_blocked = False
             dd_state = self.drawdown_guard.update(equity)
             drawdown_pct = (self.drawdown_guard.peak_equity - equity) / max(self.drawdown_guard.peak_equity, 1)
+            self._cycle_diag_equity = equity
+            self._cycle_diag_dd_state = dd_state
+            self._cycle_diag_drawdown_pct = drawdown_pct
 
             if equity > self._peak_equity:
                 self._peak_equity = equity
@@ -2044,6 +2373,8 @@ class TradingEngine:
             self._sync_open_trades_from_mt5()
             self._reconcile_open_trades_with_mt5(equity)
             self._scan_mt5_closed_deals_for_journal(equity)
+            self._close_positions_on_blocked_symbols()
+            self._close_stub_positions_for_resize()
             self._manage_positions(equity, dd_state, margin_state)
             self._apply_sharpe_guard_closes(equity)
 
@@ -2067,138 +2398,156 @@ class TradingEngine:
                 logger.info("Engine paused — managing exits only, no new entries")
                 self._record_cycle_skip("*", "Engine paused — no new entries")
             elif entries_allowed and not self._entries_blocked:
-                if not self.simulation:
-                    self.live_feed._mt5_tick_fallback()
-                session = self.session_filter.current_session()
-                pos_snapshot = self._positions_snapshot()
-                if not self.simulation and not pos_snapshot.trusted:
-                    logger.warning("Positions unavailable — skipping new entries this cycle (fail-closed)")
-                    self._record_cycle_skip("*", "Position state unavailable (fail-closed)")
-                elif self._fill_overshoot_block and not self.simulation:
-                    logger.warning("Fill overshoot block active — skipping new entries this cycle")
-                    self._record_cycle_skip("*", "Prior fill overshoot — entries blocked")
-                elif self._fill_undershoot_block and not self.simulation:
-                    logger.warning("Fill undershoot block active — skipping new entries this cycle")
-                    self._record_cycle_skip("*", "Prior fill undershoot — entries blocked")
-                else:
-                    open_positions = pos_snapshot.positions
-                    phase_rules = self.config.phase_rules
-                    blocked_symbols = set(self._live_filters.get("blocked_symbols", [])) | set(
-                        phase_rules.get("blocked_symbols", []),
-                    )
-                    obj_overrides = self._objective_runtime_overrides()
-                    max_new = int(
-                        self._live_filters.get("max_new_entries_per_cycle")
-                        or phase_rules.get("max_new_entries_per_cycle")
-                        or obj_overrides["max_entries"]
-                    )
-                    entries_opened = 0
-                    session_agents = (
-                        None
-                        if phase_rules.get("ignore_session_agents")
-                        else session.preferred_agents
-                    )
-                    now_utc = datetime.now(timezone.utc)
-
-                    candidates: list[str] = []
-                    for symbol in self.config.active_symbols:
-                        self._cycle_symbols_attempted += 1
-                        if symbol in blocked_symbols:
-                            self._record_cycle_skip(
-                                symbol,
-                                f"Blocked symbol {symbol}",
-                                session.name,
-                            )
-                            continue
-                        if not self.session_filter.should_trade_symbol(symbol):
-                            logger.debug("Session filter skip: %s (session=%s)", symbol, session.name)
-                            self._record_cycle_skip(
-                                symbol,
-                                f"Session inactive ({session.name})",
-                                session.name,
-                            )
-                            continue
-                        cooldown_until = self._symbol_cooldown_until.get(symbol)
-                        if cooldown_until and now_utc < cooldown_until:
-                            mins_left = (cooldown_until - now_utc).total_seconds() / 60
-                            self._record_cycle_skip(
-                                symbol,
-                                f"Symbol cooldown ({mins_left:.0f}m remaining)",
-                                session.name,
-                            )
-                            continue
-                        if cooldown_until and now_utc >= cooldown_until:
-                            del self._symbol_cooldown_until[symbol]
-                        if self._symbol_has_position(symbol, open_positions):
-                            logger.debug("Skip %s — position already open", symbol)
-                            self._record_cycle_skip(
-                                symbol,
-                                "Open position already exists",
-                                session.name,
-                            )
-                            continue
-                        candidates.append(symbol)
-
-                    if phase_rules.get("prioritize_by_opportunity", False) and len(candidates) > 1:
-                        opp_scores = {s: self._quick_opportunity_score(s) for s in candidates}
-                        prefer = self._live_filters.get("prefer_symbols") or []
-                        prefer_rank = {sym: len(prefer) - i for i, sym in enumerate(prefer)}
-                        candidates.sort(
-                            key=lambda s: (
-                                prefer_rank.get(s, 0),
-                                opp_scores[s],
-                            ),
-                            reverse=True,
+                loss_blocked, loss_reason = self._finals_loss_guard_blocks_entries()
+                if loss_blocked:
+                    logger.warning("%s", loss_reason)
+                    self._record_cycle_skip("*", loss_reason)
+                if not loss_blocked:
+                    if not self.simulation:
+                        self.live_feed._mt5_tick_fallback()
+                    session = self.session_filter.current_session()
+                    pos_snapshot = self._positions_snapshot()
+                    if not self.simulation and not pos_snapshot.trusted:
+                        logger.warning("Positions unavailable — skipping new entries this cycle (fail-closed)")
+                        self._record_cycle_skip("*", "Position state unavailable (fail-closed)")
+                    elif self._fill_overshoot_block and not self.simulation:
+                        logger.warning("Fill overshoot block active — skipping new entries this cycle")
+                        self._record_cycle_skip("*", "Prior fill overshoot — entries blocked")
+                    elif self._fill_undershoot_block and not self.simulation:
+                        logger.warning("Fill undershoot block active — skipping new entries this cycle")
+                        self._record_cycle_skip("*", "Prior fill undershoot — entries blocked")
+                    else:
+                        open_positions = pos_snapshot.positions
+                        phase_rules = self.config.phase_rules
+                        blocked_symbols = set(self._live_filters.get("blocked_symbols", [])) | set(
+                            phase_rules.get("blocked_symbols", []),
                         )
-                        logger.info(
-                            "Opportunity rank (top 5): %s",
-                            ", ".join(
-                                f"{s}={opp_scores[s]:.2f}"
-                                for s in candidates[:5]
-                            ),
+                        obj_overrides = self._objective_runtime_overrides()
+                        max_new = int(
+                            self._live_filters.get("max_new_entries_per_cycle")
+                            or phase_rules.get("max_new_entries_per_cycle")
+                            or obj_overrides["max_entries"]
                         )
+                        entries_opened = 0
+                        session_agents = (
+                            None
+                            if phase_rules.get("ignore_session_agents")
+                            else session.preferred_agents
+                        )
+                        now_utc = datetime.now(timezone.utc)
 
-                    for symbol in candidates:
-                        if entries_opened >= max_new:
+                        candidates: list[str] = []
+                        for symbol in self.config.active_symbols:
+                            self._cycle_symbols_attempted += 1
+                            if symbol in blocked_symbols:
+                                self._record_cycle_skip(
+                                    symbol,
+                                    f"Blocked symbol {symbol}",
+                                    session.name,
+                                )
+                                continue
+                            if not self.session_filter.should_trade_symbol(symbol):
+                                logger.debug("Session filter skip: %s (session=%s)", symbol, session.name)
+                                self._record_cycle_skip(
+                                    symbol,
+                                    f"Session inactive ({session.name})",
+                                    session.name,
+                                )
+                                continue
+                            cooldown_until = self._symbol_cooldown_until.get(symbol)
+                            if cooldown_until and now_utc < cooldown_until:
+                                mins_left = (cooldown_until - now_utc).total_seconds() / 60
+                                self._record_cycle_skip(
+                                    symbol,
+                                    f"Symbol cooldown ({mins_left:.0f}m remaining)",
+                                    session.name,
+                                )
+                                continue
+                            if cooldown_until and now_utc >= cooldown_until:
+                                del self._symbol_cooldown_until[symbol]
+                            if self._symbol_has_position(symbol, open_positions):
+                                logger.debug("Skip %s — position already open", symbol)
+                                self._record_cycle_skip(
+                                    symbol,
+                                    "Open position already exists",
+                                    session.name,
+                                )
+                                continue
+                            candidates.append(symbol)
+
+                        if phase_rules.get("prioritize_by_opportunity", False) and len(candidates) > 1:
+                            opp_scores = {s: self._quick_opportunity_score(s) for s in candidates}
+                            prefer = self._live_filters.get("prefer_symbols") or []
+                            prefer_rank = {sym: len(prefer) - i for i, sym in enumerate(prefer)}
+                            candidates.sort(
+                                key=lambda s: (
+                                    1 if self._momentum_flag_active(s, now_utc) else 0,
+                                    prefer_rank.get(s, 0),
+                                    opp_scores[s],
+                                ),
+                                reverse=True,
+                            )
                             logger.info(
-                                "Max new entries per cycle reached (%d) — remaining symbols deferred",
-                                max_new,
+                                "Opportunity rank (top 5): %s",
+                                ", ".join(
+                                    f"{s}={opp_scores[s]:.2f}"
+                                    for s in candidates[:5]
+                                ),
                             )
-                            break
-                        max_crypto = self._live_filters.get("max_crypto_entries_per_cycle")
-                        if (
-                            max_crypto is not None
-                            and self._is_crypto_symbol(symbol)
-                            and self._crypto_entries_opened_this_cycle >= int(max_crypto)
-                        ):
-                            self._record_cycle_skip(
-                                symbol,
-                                f"Max crypto entries per cycle ({max_crypto})",
-                                session.name,
+
+                        for symbol in candidates:
+                            if entries_opened >= max_new:
+                                logger.info(
+                                    "Max new entries per cycle reached (%d) — remaining symbols deferred",
+                                    max_new,
+                                )
+                                break
+                            max_crypto = self._live_filters.get("max_crypto_entries_per_cycle")
+                            if (
+                                max_crypto is not None
+                                and self._is_crypto_symbol(symbol)
+                                and self._crypto_entries_opened_this_cycle >= int(max_crypto)
+                            ):
+                                self._record_cycle_skip(
+                                    symbol,
+                                    f"Max crypto entries per cycle ({max_crypto})",
+                                    session.name,
+                                )
+                                continue
+                            opened = self._process_symbol(
+                                symbol, equity, dd_state, margin_state, session.name, drawdown_pct,
+                                peer_adj=peer_adj, peer_sentiment=peer_sentiment,
+                                preferred_agents=session_agents,
+                                peer_conservative=peer_unavailable,
                             )
-                            continue
-                        opened = self._process_symbol(
-                            symbol, equity, dd_state, margin_state, session.name, drawdown_pct,
-                            peer_adj=peer_adj, peer_sentiment=peer_sentiment,
-                            preferred_agents=session_agents,
-                            peer_conservative=peer_unavailable,
-                        )
-                        if opened:
-                            entries_opened += 1
-                            open_positions = self._positions_snapshot().positions
-                            account = self.connector.get_account_info()
-                            eq_val = account_equity(account, simulation=self.simulation)
-                            if eq_val is not None:
-                                equity = eq_val
-                                margin_state = self._account_margin_state(account)
+                            if opened:
+                                entries_opened += 1
+                                open_positions = self._positions_snapshot().positions
+                                account = self.connector.get_account_info()
+                                eq_val = account_equity(account, simulation=self.simulation)
+                                if eq_val is not None:
+                                    equity = eq_val
+                                    margin_state = self._account_margin_state(account)
         finally:
             self._cycle_in_progress = False
+            if self._cycle_diag_dd_state is not None and self._cycle_diag_equity is not None:
+                self._write_cycle_diagnostics(
+                    cycle_start,
+                    self._cycle_diag_equity,
+                    self._cycle_diag_dd_state,
+                    self._cycle_diag_drawdown_pct,
+                )
             self._publish_state(cycle_start)
 
     def _apply_sharpe_guard_closes(self, equity: float) -> None:
+        phase_rules = self.config.phase_rules
+        if not phase_rules.get("sharpe_guard_enabled", True):
+            return
         positions = self.connector.get_positions()
         if not positions:
             return
+
+        min_r = phase_rules.get("sharpe_guard_min_r_to_close")
 
         def _pnl_pct(pos: dict) -> float:
             symbol = str(pos.get("symbol", ""))
@@ -2213,6 +2562,14 @@ class TradingEngine:
 
         for ticket in self.sharpe_guard.evaluate(positions, equity, _pnl_pct):
             pos = next((p for p in positions if p.get("ticket") == ticket), {})
+            if min_r is not None:
+                r_mult = self._position_r_multiple(int(ticket), pos)
+                if r_mult is not None and r_mult > float(min_r):
+                    logger.debug(
+                        "SharpeGuard skip ticket %d: r=%.2f above min_r=%.2f",
+                        ticket, r_mult, min_r,
+                    )
+                    continue
             logger.info("SharpeGuard closing ticket %d", ticket)
             before_vol = float(pos.get("volume", 0))
             result = self.connector.close_position(ticket)
@@ -2750,11 +3107,23 @@ class TradingEngine:
         self.memory.store_trade(record)
 
         symbol = tracked.get("symbol", "")
-        cooldown_min = self._symbol_cooldown_minutes()
-        if symbol and cooldown_min > 0:
-            self._symbol_cooldown_until[symbol] = datetime.now(timezone.utc) + timedelta(
-                minutes=cooldown_min,
-            )
+        phase_rules = self.config.phase_rules
+        phase = self.config.current_phase
+        if symbol and r_multiple > 1.5 and phase in self._momentum_phases():
+            self._momentum_flags[symbol] = datetime.now(timezone.utc) + timedelta(minutes=30)
+        if symbol:
+            if r_multiple > 1.5 and phase in self._momentum_phases():
+                cd_min = int(phase_rules.get("momentum_cooldown_minutes", 2))
+            elif pnl > 0 or r_multiple > 0:
+                cd_min = int(phase_rules.get("win_cooldown_minutes", 3))
+            elif pnl < 0 or r_multiple < 0:
+                cd_min = int(phase_rules.get("loss_cooldown_minutes", 12))
+            else:
+                cd_min = self._symbol_cooldown_minutes()
+            if cd_min > 0:
+                self._symbol_cooldown_until[symbol] = datetime.now(timezone.utc) + timedelta(
+                    minutes=cd_min,
+                )
 
     def _quick_opportunity_score(self, symbol: str) -> float:
         """Lightweight pre-scan to rank symbols — highest expected edge first."""
@@ -2762,7 +3131,14 @@ class TradingEngine:
         if m15_df is None or len(m15_df) < 50:
             return -1.0
         donchian_period = int(self.config.agent_config("breakout_hunter").get("donchian_period", 20))
-        multi = self.feature_engine.compute_multi(symbol, m15_df, donchian_period)
+        phase_rules = self.config.phase_rules
+        regime_adx = int(phase_rules.get("regime_adx_period", 14))
+        regime_window = int(phase_rules.get("regime_percentile_window", 20 if regime_adx >= 20 else 100))
+        multi = self.feature_engine.compute_multi(
+            symbol, m15_df, donchian_period,
+            adx_period=regime_adx,
+            percentile_window=regime_window,
+        )
         if not multi:
             return -1.0
         primary = multi.get("M15") or next(iter(multi.values()))
@@ -2776,7 +3152,12 @@ class TradingEngine:
             sig = agent.analyze(primary)
             if not sig.is_actionable:
                 continue
-            weight = float(self.config.agents.get(agent.name, {}).get("weight", 0.2))
+            weight = float(
+                (phase_rules.get("agent_weights") or {}).get(
+                    agent.name,
+                    self.config.agents.get(agent.name, {}).get("weight", 0.2),
+                )
+            )
             boost = float(boosts.get(agent.name, 1.0))
             score = sig.confidence * weight * boost
             if score > best:
@@ -2800,6 +3181,13 @@ class TradingEngine:
         for sym in lf.get("audit_winner_symbols", []):
             if symbol == sym:
                 best += 0.30
+        runner_min_adx = lf.get("runner_min_adx")
+        if (
+            runner_min_adx is not None
+            and primary.adx >= float(runner_min_adx)
+            and primary.regime.value in ("trending", "volatile")
+        ):
+            best += 0.25
         should_balance, dominant_long = self._net_directional_balance_context()
         if should_balance and best_direction:
             balancing = "BUY" if not dominant_long else "SELL"
@@ -2893,6 +3281,9 @@ class TradingEngine:
         }
 
         donchian_period = int(self.config.agent_config("breakout_hunter").get("donchian_period", 20))
+        phase_rules = self.config.phase_rules
+        regime_adx = int(phase_rules.get("regime_adx_period", 14))
+        regime_window = int(phase_rules.get("regime_percentile_window", 20 if regime_adx >= 20 else 100))
         h1_df = None
         h4_df = None
         if not self.simulation:
@@ -2904,12 +3295,13 @@ class TradingEngine:
             donchian_period,
             h1_ohlcv=h1_df,
             h4_ohlcv=h4_df,
+            adx_period=regime_adx,
+            percentile_window=regime_window,
         )
         if not multi_features:
             self._record_cycle_skip(symbol, "Feature computation failed", session_name)
             return False
 
-        phase_rules = self.config.phase_rules
         live_filters = self._live_filters
         blocked_symbols = set(live_filters.get("blocked_symbols", [])) | set(
             phase_rules.get("blocked_symbols", []),
@@ -3086,6 +3478,32 @@ class TradingEngine:
         context["return_focus"] = bool(phase_rules.get("return_focus"))
         context["min_orchestrator_size_scale"] = phase_rules.get("min_orchestrator_size_scale", 0.90)
         context["block_debate_fallback"] = bool(live_filters.get("block_debate_only_entries", False))
+        context["solo_ml_metal_sell_min_confidence"] = live_filters.get(
+            "solo_ml_metal_sell_min_confidence",
+        )
+        context["audit_winner_symbols"] = live_filters.get(
+            "audit_winner_symbols",
+        ) or ["USD/CAD", "XAG/USD"]
+        context["audit_solo_trend_surfer_min_confidence"] = live_filters.get(
+            "audit_solo_trend_surfer_min_confidence",
+        )
+        context["audit_winner_dual_min_adx"] = live_filters.get("audit_winner_dual_min_adx")
+        context["audit_winner_dual_min_confidence"] = live_filters.get(
+            "audit_winner_dual_min_confidence",
+        )
+        context["block_direction_in_regimes"] = live_filters.get("block_direction_in_regimes") or {}
+        ml_sells = [
+            s for s in signals
+            if getattr(s, "agent_name", "") == "ml_signal"
+            and s.is_actionable
+            and s.direction.value == "SELL"
+        ]
+        if ml_sells:
+            context["ml_metal_sell_confidence"] = max(s.confidence for s in ml_sells)
+        context["risk_tier"] = dd_state.tier
+        base_min_conf = phase_rules.get("min_agent_confidence")
+        if base_min_conf is not None and self._momentum_flag_active(symbol):
+            context["min_confidence_override"] = float(base_min_conf) - 0.05
 
         decision = self.orchestrator.decide(
             primary_features, signals, dd_state.tier, context=context,
@@ -3152,6 +3570,9 @@ class TradingEngine:
                 min_consensus = max(min_consensus, audit_min)
             else:
                 min_consensus = audit_min
+        symbol_overrides = live_filters.get("symbol_min_consensus_agents") or {}
+        if symbol in symbol_overrides:
+            min_consensus = int(symbol_overrides[symbol])
         technical_agents = set(
             live_filters.get("technical_agents")
             or ["trend_surfer", "breakout_hunter", "momentum_pulse", "mean_reversion"]
@@ -3198,6 +3619,61 @@ class TradingEngine:
                 and decision.confidence >= a_plus_conf
                 and (not require_debate or debate_confirms)
             )
+            if live_filters.get("elite_only_entries"):
+                a_plus_ok = False
+            solo_metal_sell_min = live_filters.get("solo_ml_metal_sell_min_confidence")
+            ml_solo_conf = max(
+                (
+                    s.confidence
+                    for s in signals
+                    if s.is_actionable
+                    and s.direction == decision.direction
+                    and getattr(s, "agent_name", "") == "ml_signal"
+                ),
+                default=0.0,
+            )
+            solo_metal_sell_ok = (
+                solo_metal_sell_min is not None
+                and self._is_metal_symbol(symbol)
+                and decision.direction.value == "SELL"
+                and primary_features.regime.value in ("trending", "volatile")
+                and agreeing == 1
+                and ml_solo_conf >= float(solo_metal_sell_min)
+                and all(
+                    getattr(s, "agent_name", "") == "ml_signal"
+                    for s in signals
+                    if s.is_actionable and s.direction == decision.direction
+                )
+                and debate_confirms
+            )
+            audit_winners = frozenset(
+                live_filters.get("audit_winner_symbols") or ["USD/CAD", "XAG/USD"],
+            )
+            audit_ts_min = float(
+                live_filters.get("audit_solo_trend_surfer_min_confidence") or 0.72,
+            )
+            ts_solo_conf = max(
+                (
+                    s.confidence
+                    for s in signals
+                    if s.is_actionable
+                    and s.direction == decision.direction
+                    and getattr(s, "agent_name", "") == "trend_surfer"
+                ),
+                default=0.0,
+            )
+            audit_solo_trend_surfer_ok = (
+                symbol in audit_winners
+                and decision.direction.value in ("BUY", "SELL")
+                and primary_features.regime.value in ("trending", "volatile")
+                and agreeing == 1
+                and ts_solo_conf >= audit_ts_min
+                and all(
+                    getattr(s, "agent_name", "") == "trend_surfer"
+                    for s in signals
+                    if s.is_actionable and s.direction == decision.direction
+                )
+            )
             active_size_boost = self.competition_strategy.resolve_size_boost(
                 symbol,
                 decision.direction.value,
@@ -3205,12 +3681,47 @@ class TradingEngine:
                 signals,
                 live_filters,
                 counts_as_technical=_counts_as_technical,
+                adx=primary_features.adx,
+                regime=primary_features.regime.value,
             )
+            aa_plus_max = live_filters.get("max_aa_plus_entries_per_cycle")
+            if (
+                aa_plus_max is not None
+                and active_size_boost
+                and active_size_boost.get("boost_tier") == "tier_aa_plus"
+                and self._aa_plus_entries_opened_this_cycle >= int(aa_plus_max)
+            ):
+                active_size_boost = self.competition_strategy.tier_a_plus_size_boost(
+                    symbol,
+                    decision.direction.value,
+                    decision.confidence,
+                    signals,
+                    live_filters,
+                    counts_as_technical=_counts_as_technical,
+                    adx=primary_features.adx,
+                    regime=primary_features.regime.value,
+                ) or self.competition_strategy.audit_winner_size_boost(
+                    symbol,
+                    decision.direction.value,
+                    decision.confidence,
+                    signals,
+                    live_filters,
+                    counts_as_technical=_counts_as_technical,
+                    adx=primary_features.adx,
+                    regime=primary_features.regime.value,
+                )
         else:
             active_size_boost = None
+            solo_metal_sell_ok = False
+            audit_solo_trend_surfer_ok = False
 
         if decision.direction.value != "HOLD" and min_consensus > 1:
-            if agreeing < min_consensus and not a_plus_ok:
+            if (
+                agreeing < min_consensus
+                and not a_plus_ok
+                and not solo_metal_sell_ok
+                and not audit_solo_trend_surfer_ok
+            ):
                 skip = f"Live filter: need {min_consensus} agreeing agents, got {agreeing}"
                 self.trade_logger.log(
                     symbol=symbol,
@@ -3269,6 +3780,52 @@ class TradingEngine:
             })
             return False
 
+        if (
+            self._is_metal_symbol(symbol)
+            and decision.direction.value == "BUY"
+            and primary_features.regime.value in ("trending", "volatile")
+        ):
+            ml_sell_conf = max(
+                (
+                    s.confidence
+                    for s in signals
+                    if s.agent_name == "ml_signal"
+                    and s.is_actionable
+                    and s.direction.value == "SELL"
+                ),
+                default=0.0,
+            )
+            metal_sell_min = float(
+                live_filters.get("solo_ml_metal_sell_min_confidence") or 0.68,
+            )
+            if ml_sell_conf + 1e-9 >= metal_sell_min:
+                skip = (
+                    f"Metal BUY blocked — ml SELL {ml_sell_conf:.2f} "
+                    "(audit-winning short path)"
+                )
+                self.trade_logger.log(
+                    symbol=symbol,
+                    regime=primary_features.regime.value,
+                    session=session_name,
+                    direction=decision.direction.value,
+                    confidence=decision.confidence,
+                    agent_votes=decision.agent_votes,
+                    status="skipped",
+                    reasoning=skip,
+                )
+                self._cycle_decisions.append({
+                    "symbol": symbol,
+                    "direction": decision.direction.value,
+                    "confidence": decision.confidence,
+                    "regime": primary_features.regime.value,
+                    "session": session_name,
+                    "reasoning": decision.reasoning,
+                    "agent_votes": vote_summary,
+                    "status": "skipped",
+                    "skip_reason": skip,
+                })
+                return False
+
         min_confidence = live_filters.get("min_confidence")
         sym_conf = (live_filters.get("symbol_min_confidence") or {}).get(symbol)
         if sym_conf is not None:
@@ -3281,6 +3838,8 @@ class TradingEngine:
         if (
             min_confidence is not None
             and decision.direction.value != "HOLD"
+            and not solo_metal_sell_ok
+            and not audit_solo_trend_surfer_ok
             and decision.confidence + 1e-9 < float(min_confidence)
         ):
             skip = f"Live filter: confidence {decision.confidence:.2f} < {float(min_confidence):.2f}"
@@ -3570,7 +4129,9 @@ class TradingEngine:
         decision_record = self._cycle_decisions[-1]
         if active_size_boost:
             decision_record["size_boost_tier"] = active_size_boost.get("boost_tier")
-            decision_record["tier_a_plus_boost"] = active_size_boost.get("boost_tier") == "tier_a_plus"
+            tier = active_size_boost.get("boost_tier")
+            decision_record["tier_a_plus_boost"] = tier in ("tier_a_plus", "tier_aa_plus")
+            decision_record["tier_aa_plus_boost"] = tier == "tier_aa_plus"
             decision_record["size_boost"] = {
                 k: v for k, v in active_size_boost.items() if v is not None
             }
@@ -3579,7 +4140,40 @@ class TradingEngine:
         is_balancing_trade = (
             balancing_dir is not None and decision.direction.value == balancing_dir
         )
-        if return_focus and is_balancing_trade:
+        elite_entry = bool(
+            active_size_boost
+            and active_size_boost.get("boost_tier")
+            in ("tier_aa_plus", "tier_a_plus")
+        ) or solo_metal_sell_ok or audit_solo_trend_surfer_ok
+        if (
+            live_filters.get("elite_only_entries")
+            and decision.direction.value != "HOLD"
+            and not elite_entry
+        ):
+            decision_record["status"] = "skipped"
+            decision_record["skip_reason"] = (
+                "Live filter: elite-only — requires A+ or AA+ confluence setup"
+            )
+            return False
+        if (
+            live_filters.get("require_confluence_boost_for_entry")
+            and decision.direction.value != "HOLD"
+            and not elite_entry
+            and not a_plus_ok
+            and not solo_metal_sell_ok
+            and not audit_solo_trend_surfer_ok
+            and not is_balancing_trade
+        ):
+            decision_record["status"] = "skipped"
+            decision_record["skip_reason"] = (
+                "Live filter: requires A+/AA+ confluence setup"
+            )
+            return False
+        if (
+            return_focus
+            and is_balancing_trade
+            and not live_filters.get("enable_balancing_entries_return_focus", False)
+        ):
             decision_record["status"] = "skipped"
             decision_record["skip_reason"] = (
                 "Return-focus: balancing entries disabled"
@@ -3666,13 +4260,18 @@ class TradingEngine:
 
         if regime_key == "trending":
             trend_min_conf = live_filters.get("trending_min_confidence")
-            if trend_min_conf is not None and decision.confidence < float(trend_min_conf):
-                if not is_balancing_trade:
-                    decision_record["status"] = "skipped"
-                    decision_record["skip_reason"] = (
-                        f"Trending regime requires confidence >= {float(trend_min_conf):.2f}"
-                    )
-                    return False
+            audit_solo_exempt = solo_metal_sell_ok or audit_solo_trend_surfer_ok
+            if (
+                trend_min_conf is not None
+                and decision.confidence < float(trend_min_conf)
+                and not is_balancing_trade
+                and not audit_solo_exempt
+            ):
+                decision_record["status"] = "skipped"
+                decision_record["skip_reason"] = (
+                    f"Trending regime requires confidence >= {float(trend_min_conf):.2f}"
+                )
+                return False
             trend_min_consensus = live_filters.get("trending_min_consensus_agents")
             if trend_min_consensus is not None:
                 agreeing_technical = sum(
@@ -3691,12 +4290,13 @@ class TradingEngine:
                         and s.agent_name == "sentiment_agent"
                     )
                 if agreeing_technical < required_consensus:
-                    decision_record["status"] = "skipped"
-                    decision_record["skip_reason"] = (
-                        f"Trending regime requires {required_consensus} technical agents, "
-                        f"got {agreeing_technical}"
-                    )
-                    return False
+                    if not (audit_solo_trend_surfer_ok or solo_metal_sell_ok):
+                        decision_record["status"] = "skipped"
+                        decision_record["skip_reason"] = (
+                            f"Trending regime requires {required_consensus} technical agents, "
+                            f"got {agreeing_technical}"
+                        )
+                        return False
 
         if event_gate.min_confidence_override and decision.confidence < event_gate.min_confidence_override:
             decision_record["status"] = "skipped"
@@ -3704,6 +4304,10 @@ class TradingEngine:
                 f"Event gate requires confidence>={event_gate.min_confidence_override}"
             )
             return False
+
+        min_size_scale = phase_rules.get("min_orchestrator_size_scale")
+        if min_size_scale and phase_rules.get("return_focus") and decision.direction.value != "HOLD":
+            decision.size_scale = max(decision.size_scale, float(min_size_scale))
 
         event_size_mult = event_gate.size_multiplier
         size_mult = decision.size_scale * peer_adj * event_size_mult
@@ -3727,6 +4331,8 @@ class TradingEngine:
                 decision.confidence,
                 agreeing,
             )
+
+        size_mult *= self._intraday_loss_size_mult()
 
         if self.intelligence.enabled and self._is_crypto_symbol(symbol):
             macro = self.intelligence.get_macro()
@@ -3787,14 +4393,30 @@ class TradingEngine:
         ):
             macro = self.intelligence.get_macro()
             if macro.bias == "risk_off" and macro.usd_strength == "strong":
-                if live_filters.get("block_metal_shorts_risk_off"):
+                agreeing_names = {
+                    s.agent_name
+                    for s in signals
+                    if s.is_actionable and s.direction == decision.direction
+                }
+                dual_metal_audit_sell = (
+                    agreeing >= 2
+                    and "ml_signal" in agreeing_names
+                    and "trend_surfer" in agreeing_names
+                )
+                metal_short_exempt = (
+                    solo_metal_sell_ok
+                    or audit_solo_trend_surfer_ok
+                    or dual_metal_audit_sell
+                    or "ML-metal SELL anchor" in (decision.reasoning or "")
+                )
+                if live_filters.get("block_metal_shorts_risk_off") and not metal_short_exempt:
                     decision_record["status"] = "skipped"
                     decision_record["skip_reason"] = (
                         "Macro risk-off — metal shorts blocked (safe-haven regime)"
                     )
                     return False
                 metal_short_min = float(live_filters.get("macro_metal_short_min_confidence") or 0.92)
-                if decision.confidence < metal_short_min:
+                if not metal_short_exempt and decision.confidence < metal_short_min:
                     decision_record["status"] = "skipped"
                     decision_record["skip_reason"] = (
                         f"Macro risk-off — metal short requires confidence >= {metal_short_min:.2f}"
@@ -3847,6 +4469,44 @@ class TradingEngine:
                 )
                 return False
 
+        block_dir_regimes = live_filters.get("block_direction_in_regimes") or {}
+        sym_blocks = block_dir_regimes.get(symbol) or {}
+        dir_blocks = sym_blocks.get(decision.direction.value) or []
+        regime_key = primary_features.regime.value
+        if decision.direction.value != "HOLD" and regime_key in dir_blocks:
+            decision_record["status"] = "skipped"
+            decision_record["skip_reason"] = (
+                f"Live filter: {decision.direction.value} blocked in {regime_key} regime"
+            )
+            return False
+
+        trend_min_adx = live_filters.get("trending_min_adx")
+        if (
+            trend_min_adx is not None
+            and regime_key == "trending"
+            and decision.direction.value != "HOLD"
+            and primary_features.adx < float(trend_min_adx)
+        ):
+            decision_record["status"] = "skipped"
+            decision_record["skip_reason"] = (
+                f"Live filter: trending ADX {primary_features.adx:.1f} < {float(trend_min_adx):.0f}"
+            )
+            return False
+
+        crypto_short_max_rsi = live_filters.get("crypto_short_max_rsi")
+        if (
+            is_crypto
+            and crypto_short_max_rsi is not None
+            and decision.direction.value == "SELL"
+            and primary_features.rsi_14 > float(crypto_short_max_rsi)
+        ):
+            decision_record["status"] = "skipped"
+            decision_record["skip_reason"] = (
+                f"Live filter: crypto RSI {primary_features.rsi_14:.1f} > "
+                f"{float(crypto_short_max_rsi):.0f} — short into strength"
+            )
+            return False
+
         crypto_min_adx = live_filters.get("crypto_min_adx")
         if (
             is_crypto
@@ -3859,6 +4519,86 @@ class TradingEngine:
                 f"Live filter: crypto ADX {primary_features.adx:.1f} < {float(crypto_min_adx):.0f} — no trend"
             )
             return False
+
+        crypto_short_min_rsi = live_filters.get("crypto_short_min_rsi")
+        if (
+            is_crypto
+            and crypto_short_min_rsi is not None
+            and decision.direction.value == "SELL"
+            and primary_features.rsi_14 < float(crypto_short_min_rsi)
+            and agreeing < 3
+        ):
+            decision_record["status"] = "skipped"
+            decision_record["skip_reason"] = (
+                f"Live filter: crypto RSI {primary_features.rsi_14:.1f} < "
+                f"{float(crypto_short_min_rsi):.0f} — short bounce risk"
+            )
+            return False
+
+        crypto_short_min_conf = live_filters.get("crypto_short_min_confidence")
+        if (
+            is_crypto
+            and crypto_short_min_conf is not None
+            and decision.direction.value == "SELL"
+            and decision.confidence < float(crypto_short_min_conf)
+        ):
+            decision_record["status"] = "skipped"
+            decision_record["skip_reason"] = (
+                f"Live filter: crypto short confidence {decision.confidence:.2f} "
+                f"< {float(crypto_short_min_conf):.2f}"
+            )
+            return False
+
+        if (
+            live_filters.get("entry_quality_enabled", True)
+            and decision.direction.value != "HOLD"
+        ):
+            debate_side = "bull" if decision.direction.value == "BUY" else "bear"
+            debate_confirms_q = debate.winner == debate_side
+            agreeing_names = [
+                s.agent_name
+                for s in signals
+                if s.is_actionable and s.direction == decision.direction
+            ]
+            symbol_rates = self.competition_strategy.symbol_rates(symbol)
+            audit_rates: dict[str, float] = {}
+            q = score_entry(
+                symbol=symbol,
+                direction=decision.direction.value,
+                regime=primary_features.regime.value,
+                adx=float(primary_features.adx),
+                rsi=float(primary_features.rsi_14),
+                confidence=float(decision.confidence),
+                agreeing_agents=agreeing_names,
+                symbol_rates=symbol_rates,
+                audit_rates=audit_rates,
+                debate_confirms=debate_confirms_q,
+                solo_metal_sell_ok=bool(solo_metal_sell_ok),
+                audit_solo_trend_surfer_ok=bool(audit_solo_trend_surfer_ok),
+                audit_winner_symbols=frozenset(
+                    live_filters.get("audit_winner_symbols") or ["USD/CAD", "XAG/USD"],
+                ),
+            )
+            min_q = float(live_filters.get("min_entry_quality_score", 0.72))
+            if not passes_quality_gate(
+                q,
+                min_score=min_q,
+                allow_solo_metal_sell=bool(solo_metal_sell_ok),
+                allow_audit_solo_trend_surfer=bool(audit_solo_trend_surfer_ok),
+            ):
+                skip = (
+                    f"Entry quality {q.score:.2f} < {min_q:.2f} ({q.tier}) — "
+                    + "; ".join(q.reasons[:3])
+                )
+                decision_record["status"] = "skipped"
+                decision_record["skip_reason"] = skip
+                decision_record["entry_quality_score"] = q.score
+                decision_record["entry_quality_tier"] = q.tier
+                return False
+            decision_record["entry_quality_score"] = q.score
+            decision_record["entry_quality_tier"] = q.tier
+            if q.tier == "gold":
+                size_mult *= float(live_filters.get("gold_quality_size_mult", 1.25))
 
         max_fx_shorts = live_filters.get("max_fx_shorts_per_cycle")
         if (
@@ -3885,10 +4625,6 @@ class TradingEngine:
                 f"Live filter: max CHF entries per cycle ({int(max_chf_entries)}) reached"
             )
             return False
-
-        min_size_scale = phase_rules.get("min_orchestrator_size_scale")
-        if min_size_scale and phase_rules.get("return_focus"):
-            decision.size_scale = max(decision.size_scale, float(min_size_scale))
 
         low_alloc_symbols = phase_rules.get("low_allocation_symbols", set())
         if phase_rules.get("low_allocation_requires_a_plus") and symbol in low_alloc_symbols:
@@ -4047,6 +4783,10 @@ class TradingEngine:
             leverage_haircut=margin_state.leverage_haircut,
             margin_size_multiplier=margin_state.size_multiplier * self._size_multiplier,
             max_risk_override=max_risk_pct,
+            competition_mode=self.config.current_phase in ("round1", "round2", "round3", "finals"),
+            competition_mode_boost=float(
+                self.config.phase_rules.get("competition_mode_boost", 1.4),
+            ),
         )
 
         if not self.simulation:
@@ -4433,6 +5173,14 @@ class TradingEngine:
                 self._chf_entries_opened_this_cycle += 1
             if self._is_crypto_symbol(symbol):
                 self._crypto_entries_opened_this_cycle += 1
+            if active_size_boost and active_size_boost.get("boost_tier") == "tier_aa_plus":
+                self._aa_plus_entries_opened_this_cycle += 1
+                self._open_trades[ticket]["attribution_json"]["trade_style"] = "aa_plus"
+            elif active_size_boost and active_size_boost.get("boost_tier") == "tier_a_plus":
+                self._open_trades[ticket]["attribution_json"]["trade_style"] = "a_plus"
+            elif active_size_boost and active_size_boost.get("boost_tier") == "runner":
+                self._runner_entries_opened_this_cycle += 1
+                self._open_trades[ticket]["attribution_json"]["trade_style"] = "runner"
 
         logger.info("Executed: %s", result)
         return exec_status in ("ok", "simulated") and bool(ticket) and fill_confirmed
@@ -4459,6 +5207,13 @@ class TradingEngine:
                 "close": price + np.random.randn(n) * 0.1,
                 "volume": np.random.randint(100, 1000, n).astype(float),
             })
+
+        if self._prefer_mt5_market_data():
+            mt5_df = self._get_ohlcv_mt5_fallback(symbol, timeframe)
+            if mt5_df is not None and len(mt5_df) >= 50:
+                if timeframe == "M15":
+                    self._ohlcv_source[symbol] = "mt5_primary"
+                return mt5_df
 
         df = self.connector.get_ohlcv(symbol, timeframe=timeframe, count=OHLCV_BAR_COUNT)
         zmq_bars = len(df) if df is not None else 0

@@ -1,4 +1,4 @@
-"""Competition strategy — audit-driven symbol/agent routing for top-20 scoring."""
+"""Competition strategy — audit-driven routing optimized for finals top-5 (70% return rank)."""
 
 from __future__ import annotations
 
@@ -144,6 +144,8 @@ class CompetitionStrategy:
         *,
         counts_as_technical: Callable[[Any], bool],
         default_symbols: frozenset[str],
+        adx: float | None = None,
+        regime: str | None = None,
     ) -> dict[str, float] | None:
         if direction == "HOLD" or not cfg.get("enabled"):
             return None
@@ -155,6 +157,12 @@ class CompetitionStrategy:
         min_conf = float(cfg.get("min_confidence", 0.85))
         min_consensus = int(cfg.get("min_consensus_agents", 3))
         min_technical = int(cfg.get("require_technical_agents", 2))
+        min_adx = cfg.get("min_adx")
+        if min_adx is not None and adx is not None and adx < float(min_adx):
+            return None
+        require_regimes = cfg.get("require_regimes")
+        if require_regimes and regime is not None and regime not in require_regimes:
+            return None
         if confidence < min_conf:
             return None
 
@@ -178,6 +186,16 @@ class CompetitionStrategy:
             if not has_anchor:
                 return None
 
+        if cfg.get("require_trend_surfer_and_ml", False):
+            has_ts = any(
+                getattr(s, "agent_name", "") == "trend_surfer" for s in agreeing
+            )
+            has_ml = any(
+                getattr(s, "agent_name", "") == "ml_signal" for s in agreeing
+            )
+            if not (has_ts and has_ml):
+                return None
+
         src_max_fx = cfg.get("max_fx_lots")
         src_max_crypto = cfg.get("max_crypto_lots")
         src_max_metal = cfg.get("max_metal_lots")
@@ -194,6 +212,38 @@ class CompetitionStrategy:
             "metal_min_lot_bump_risk_pct": float(cfg.get("metal_min_lot_bump_risk_pct", 0.0065)),
         }
 
+    def tier_aa_plus_size_boost(
+        self,
+        symbol: str,
+        direction: str,
+        confidence: float,
+        signals: list[Any],
+        live_filters: dict[str, Any],
+        *,
+        counts_as_technical: Callable[[Any], bool],
+        adx: float | None = None,
+        regime: str | None = None,
+    ) -> dict[str, float] | None:
+        """Elite AA+ — triple confluence, trend_surfer + ml_signal, max size."""
+        cfg = dict(live_filters.get("tier_aa_plus_size_boost") or {})
+        cfg.setdefault("boost_tier", "tier_aa_plus")
+        symbols = frozenset(
+            cfg.get("symbols")
+            or live_filters.get("audit_winner_symbols")
+            or ["USD/CAD", "XAG/USD", "AUD/USD", "XAU/USD"]
+        )
+        return self._confluence_size_boost(
+            symbol,
+            direction,
+            confidence,
+            signals,
+            cfg,
+            counts_as_technical=counts_as_technical,
+            default_symbols=symbols,
+            adx=adx,
+            regime=regime,
+        )
+
     def tier_a_plus_size_boost(
         self,
         symbol: str,
@@ -203,6 +253,8 @@ class CompetitionStrategy:
         live_filters: dict[str, Any],
         *,
         counts_as_technical: Callable[[Any], bool],
+        adx: float | None = None,
+        regime: str | None = None,
     ) -> dict[str, float] | None:
         """Return sizing multipliers when tier-A symbol hits elite A+ confluence."""
         cfg = dict(live_filters.get("tier_a_plus_size_boost") or {})
@@ -215,6 +267,40 @@ class CompetitionStrategy:
             cfg,
             counts_as_technical=counts_as_technical,
             default_symbols=TIER_A_SYMBOLS,
+            adx=adx,
+            regime=regime,
+        )
+
+    def runner_size_boost(
+        self,
+        symbol: str,
+        direction: str,
+        confidence: float,
+        signals: list[Any],
+        live_filters: dict[str, Any],
+        *,
+        counts_as_technical: Callable[[Any], bool],
+        adx: float | None = None,
+        regime: str | None = None,
+    ) -> dict[str, float] | None:
+        """Elite trend runner — big size, multi-hour hold target."""
+        cfg = dict(live_filters.get("runner_size_boost") or {})
+        cfg.setdefault("boost_tier", "runner")
+        symbols = frozenset(
+            cfg.get("symbols")
+            or live_filters.get("audit_winner_symbols")
+            or ["USD/CAD", "XAG/USD", "AUD/USD", "XAU/USD"]
+        )
+        return self._confluence_size_boost(
+            symbol,
+            direction,
+            confidence,
+            signals,
+            cfg,
+            counts_as_technical=counts_as_technical,
+            default_symbols=symbols,
+            adx=adx,
+            regime=regime,
         )
 
     def audit_winner_size_boost(
@@ -226,6 +312,8 @@ class CompetitionStrategy:
         live_filters: dict[str, Any],
         *,
         counts_as_technical: Callable[[Any], bool],
+        adx: float | None = None,
+        regime: str | None = None,
     ) -> dict[str, float] | None:
         """Moderate size boost on proven audit-winner pairs with 2-agent confluence."""
         cfg = dict(live_filters.get("audit_winner_size_boost") or {})
@@ -239,6 +327,8 @@ class CompetitionStrategy:
             cfg,
             counts_as_technical=counts_as_technical,
             default_symbols=winners,
+            adx=adx,
+            regime=regime,
         )
 
     def resolve_size_boost(
@@ -250,18 +340,37 @@ class CompetitionStrategy:
         live_filters: dict[str, Any],
         *,
         counts_as_technical: Callable[[Any], bool],
+        adx: float | None = None,
+        regime: str | None = None,
     ) -> dict[str, float] | None:
-        """Prefer elite tier-A A+ boost, else audit-winner boost."""
-        elite = self.tier_a_plus_size_boost(
+        """Prefer AA+ > A+ > audit-winner boost."""
+        aa_plus = self.tier_aa_plus_size_boost(
             symbol,
             direction,
             confidence,
             signals,
             live_filters,
             counts_as_technical=counts_as_technical,
+            adx=adx,
+            regime=regime,
         )
-        if elite is not None:
-            return elite
+        if aa_plus is not None:
+            return aa_plus
+        a_plus = self.tier_a_plus_size_boost(
+            symbol,
+            direction,
+            confidence,
+            signals,
+            live_filters,
+            counts_as_technical=counts_as_technical,
+            adx=adx,
+            regime=regime,
+        )
+        if a_plus is not None:
+            return a_plus
+        audit_cfg = live_filters.get("audit_winner_size_boost") or {}
+        if live_filters.get("elite_only_entries") or not audit_cfg.get("enabled", True):
+            return None
         return self.audit_winner_size_boost(
             symbol,
             direction,
@@ -269,6 +378,8 @@ class CompetitionStrategy:
             signals,
             live_filters,
             counts_as_technical=counts_as_technical,
+            adx=adx,
+            regime=regime,
         )
 
     def min_consensus_for_symbol(

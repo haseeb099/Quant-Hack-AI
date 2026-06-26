@@ -23,6 +23,7 @@ VOLUME_EPS = 1e-4
 DEFAULT_TIMEOUT_MS = 10000
 DATA_TIMEOUT_MS = int(os.getenv("ZMQ_DATA_TIMEOUT_MS", "15000"))
 TRADE_TIMEOUT_MS = int(os.getenv("ZMQ_TRADE_TIMEOUT_MS", "60000"))
+TRADE_ACK_TIMEOUT_MS = int(os.getenv("ZMQ_TRADE_ACK_TIMEOUT_MS", "12000"))
 MAX_RECONNECT_ATTEMPTS = 3
 TRADE_MAX_RETRIES = 3
 ZMQ_WARMUP_SEC = float(os.getenv("ZMQ_WARMUP_SEC", "2.0"))
@@ -287,7 +288,7 @@ class ZeroMQConnector:
             drain_stale = expected_action != "TRADE"
 
         original_rcv_timeout = self._pull_socket.getsockopt(zmq.RCVTIMEO)
-        trade_timeout = max(self.timeout_ms, TRADE_TIMEOUT_MS)
+        trade_timeout = max(self.timeout_ms, TRADE_ACK_TIMEOUT_MS)
         if expected_action == "TRADE":
             drained = self._drain_stale_before_trade()
             if drained:
@@ -467,6 +468,17 @@ class ZeroMQConnector:
                 )
                 return recovered
 
+            if attempt < TRADE_MAX_RETRIES - 1:
+                logger.warning(
+                    "ZeroMQ retry %d/%d for %s: %s",
+                    attempt + 1,
+                    TRADE_MAX_RETRIES,
+                    direction,
+                    last.get("message"),
+                )
+                time.sleep(0.5 * (attempt + 1))
+                continue
+
             logger.warning(
                 "ZeroMQ retry %d/%d for %s: %s",
                 attempt + 1,
@@ -474,7 +486,7 @@ class ZeroMQConnector:
                 direction,
                 last.get("message"),
             )
-            time.sleep(0.2 * (attempt + 1))
+            break
 
         recovered = self._poll_recovered_open_trade(symbol, direction, baseline, volume)
         if recovered is not None:
@@ -760,7 +772,7 @@ class ZeroMQConnector:
                 "latency_ms": 0,
             }
 
-        specs = self.get_symbol_info(symbol)
+        specs = self._symbol_specs_from_mt5(symbol) or self.get_symbol_info(symbol)
         volume = self._normalize_volume(volume, specs)
 
         command: dict[str, Any] = {
@@ -915,7 +927,39 @@ class ZeroMQConnector:
             logger.debug("MT5 account fallback failed", exc_info=True)
             return None
 
+    @staticmethod
+    def _symbol_specs_from_mt5(symbol: str) -> dict[str, float] | None:
+        try:
+            from src.integrations.mt5_session import ensure_mt5_session
+
+            ok, _ = ensure_mt5_session(require_login=False)
+            if not ok:
+                return None
+            import MetaTrader5 as mt5
+
+            mt5_sym = symbol.replace("/", "").upper()
+            if not mt5.symbol_select(mt5_sym, True):
+                return None
+            info = mt5.symbol_info(mt5_sym)
+            if info is None:
+                return None
+            return {
+                "contract_size": float(info.trade_contract_size),
+                "volume_min": float(info.volume_min),
+                "volume_step": float(info.volume_step),
+                "volume_max": float(info.volume_max),
+                "digits": float(info.digits),
+                "point": float(info.point),
+                "stops_level": float(info.trade_stops_level),
+            }
+        except Exception:
+            logger.debug("MT5 symbol specs failed for %s", symbol, exc_info=True)
+            return None
+
     def get_symbol_info(self, symbol: str) -> dict[str, float] | None:
+        specs = self._symbol_specs_from_mt5(symbol)
+        if specs:
+            return specs
         if not self._sockets_ready:
             return None
         result = self._send_command({"action": "SYMBOL_INFO", "symbol": symbol})
@@ -1106,6 +1150,46 @@ class ZeroMQConnector:
         }
         return self._send_with_retry(command, escalate_close_ticket=None)
 
+    def _modify_position_mt5(
+        self,
+        ticket: int,
+        sl: float | None = None,
+        tp: float | None = None,
+    ) -> dict[str, Any] | None:
+        try:
+            from src.integrations.mt5_session import ensure_mt5_session
+
+            ok, _ = ensure_mt5_session(require_login=False)
+            if not ok:
+                return None
+            import MetaTrader5 as mt5
+
+            positions = mt5.positions_get(ticket=ticket)
+            if not positions:
+                return None
+            pos = positions[0]
+            request: dict[str, Any] = {
+                "action": mt5.TRADE_ACTION_SLTP,
+                "position": ticket,
+                "symbol": str(pos.symbol),
+                "sl": float(sl if sl is not None else pos.sl or 0),
+                "tp": float(tp if tp is not None else pos.tp or 0),
+            }
+            result = mt5.order_send(request)
+            if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
+                return {"status": "ok", "ticket": ticket, "slippage": 0.0, "latency_ms": 0}
+            if result is not None:
+                logger.debug(
+                    "MT5 modify_position ticket=%d failed: %s %s",
+                    ticket,
+                    result.retcode,
+                    result.comment,
+                )
+            return None
+        except Exception:
+            logger.debug("MT5 modify_position failed ticket=%d", ticket, exc_info=True)
+            return None
+
     def modify_position(
         self,
         ticket: int,
@@ -1121,6 +1205,9 @@ class ZeroMQConnector:
                 "fill_rate": 1.0,
                 "latency_ms": 0,
             }
+        mt5_result = self._modify_position_mt5(ticket, sl=sl, tp=tp)
+        if mt5_result is not None:
+            return mt5_result
         command: dict[str, Any] = {
             "action": "TRADE",
             "type": "MODIFY",

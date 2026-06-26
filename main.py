@@ -100,7 +100,7 @@ def main() -> None:
 
     config = QuantAIConfig.load(
         phase=args.phase if args.phase != "auto" else "auto",
-        auto_phase=True,
+        auto_phase=args.phase == "auto",
     )
     simulation = args.mode in ("simulate", "single-cycle")
 
@@ -108,6 +108,7 @@ def main() -> None:
         config=config,
         simulation=simulation,
         cycle_minutes=config.cycle_minutes(),
+        auto_phase=args.phase == "auto",
     )
 
     if args.with_dashboard:

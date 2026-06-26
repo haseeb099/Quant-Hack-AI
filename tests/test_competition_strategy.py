@@ -144,3 +144,33 @@ def test_resolve_size_boost_prefers_tier_a_plus() -> None:
     )
     assert boost is not None
     assert boost["boost_tier"] == "tier_a_plus"
+
+
+def test_resolve_size_boost_skips_audit_winner_when_elite_only() -> None:
+    strat = CompetitionStrategy()
+    signals = [
+        _Signal("trend_surfer", Direction.BUY, 0.82),
+        _Signal("ml_signal", Direction.BUY, 0.84),
+    ]
+    live_filters = {
+        "elite_only_entries": True,
+        "audit_winner_symbols": ["USD/CAD"],
+        "audit_winner_size_boost": {
+            "enabled": True,
+            "min_consensus_agents": 2,
+            "min_confidence": 0.80,
+            "require_technical_agents": 2,
+        },
+        "tier_a_plus_size_boost": {"enabled": False},
+        "tier_aa_plus_size_boost": {"enabled": False},
+    }
+
+    boost = strat.resolve_size_boost(
+        "USD/CAD",
+        "BUY",
+        0.86,
+        signals,
+        live_filters,
+        counts_as_technical=lambda s: s.agent_name in {"trend_surfer", "ml_signal"},
+    )
+    assert boost is None

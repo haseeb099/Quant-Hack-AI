@@ -5,21 +5,26 @@ phases:
     risk_multiplier: 1.35
     target_return: "20-30%"
     objective: maximize_return
-    min_agent_confidence: 0.40
-    max_risk_pct: 0.032
-    max_new_entries_per_cycle: 2
+    min_agent_confidence: 0.35
+    max_risk_pct: 0.045
+    max_new_entries_per_cycle: 3
     prioritize_by_opportunity: true
     session_symbol_filter: false
     ignore_session_agents: true
     orchestrator_cooldown_minutes: 5
-    cycle_minutes: 8
+    cycle_minutes: 3
     net_directional_enforce_min_gross_pct: 0.20
     return_focus: true
     min_orchestrator_size_scale: 0.90
-    symbol_cooldown_minutes: 45
+    symbol_cooldown_minutes: 8
+    win_cooldown_minutes: 3
+    loss_cooldown_minutes: 12
+    momentum_cooldown_minutes: 2
     macro_block_crypto_long_fear_below: 25
     min_consensus_agents: 2
-    blocked_symbols: [XRP/USD, BAR/USD, BTC/USD, ETH/USD, SOL/USD]
+    blocked_symbols: [XRP/USD, BAR/USD, SOL/USD]
+    sharpe_guard_enabled: false
+    regime_adx_period: 20
     enable_partial_takes: true
     enable_breakeven: true
     enable_trailing: true
@@ -28,6 +33,16 @@ phases:
     breakeven_r: 0.75
     time_stop_bars: 12
     time_stop_min_r: 0.25
+    agent_weights:
+      momentum_pulse: 0.30
+      trend_surfer: 0.22
+      ml_signal: 0.28
+      mean_reversion: 0.08
+      breakout_hunter: 0.02
+      sentiment_agent: 0.08
+    agent_overrides:
+      trend_surfer:
+        require_h4_alignment: false
     start: "2026-06-21T22:00:00+01:00"
     end: "2026-06-22T22:00:00+01:00"
 
@@ -36,15 +51,18 @@ phases:
     risk_multiplier: 1.30
     target_return: "12-25%"
     objective: maximize_return
-    max_risk_pct: 0.020
-    max_new_entries_per_cycle: 4
+    min_agent_confidence: 0.35
+    max_risk_pct: 0.035
+    max_new_entries_per_cycle: 5
     prioritize_by_opportunity: true
     session_symbol_filter: false
     ignore_session_agents: true
     return_focus: true
-    cycle_minutes: 8
+    cycle_minutes: 3
     min_consensus_agents: 2
     blocked_symbols: [XRP/USD, BAR/USD]
+    sharpe_guard_enabled: false
+    regime_adx_period: 20
     enable_partial_takes: true
     enable_breakeven: true
     enable_trailing: true
@@ -52,8 +70,21 @@ phases:
     breakeven_r: 0.75
     time_stop_bars: 10
     time_stop_min_r: 0.25
-    symbol_cooldown_minutes: 30
+    symbol_cooldown_minutes: 8
+    win_cooldown_minutes: 3
+    loss_cooldown_minutes: 12
+    momentum_cooldown_minutes: 2
     net_directional_enforce_min_gross_pct: 0.15
+    agent_weights:
+      momentum_pulse: 0.30
+      trend_surfer: 0.22
+      ml_signal: 0.28
+      mean_reversion: 0.08
+      breakout_hunter: 0.02
+      sentiment_agent: 0.08
+    agent_overrides:
+      trend_surfer:
+        require_h4_alignment: false
     start: "2026-06-22T22:00:00+01:00"
     end: "2026-06-23T22:00:00+01:00"
 
@@ -64,7 +95,7 @@ phases:
     objective: maximize_return
     return_focus: true
     session_symbol_filter: false
-    cycle_minutes: 8
+    cycle_minutes: 3
     include_crypto: true
     crypto_only_if_dd_normal: false
     max_new_entries_per_cycle: 3
@@ -72,8 +103,12 @@ phases:
     min_agent_confidence: 0.55
     min_orchestrator_size_scale: 0.95
     prioritize_by_opportunity: true
-    symbol_cooldown_minutes: 20
+    symbol_cooldown_minutes: 6
+    win_cooldown_minutes: 3
+    loss_cooldown_minutes: 12
     min_consensus_agents: 2
+    sharpe_guard_enabled: true
+    sharpe_guard_min_r_to_close: -0.5
     disabled_agents: [breakout_hunter]
     blocked_symbols: [XRP/USD, BAR/USD, EUR/GBP, USD/CHF, USD/JPY]
     enable_partial_takes: true
@@ -97,41 +132,53 @@ phases:
     end: "2026-06-24T22:00:00+01:00"
 
   finals:
-    name: Finals — Top 20 Win
-    risk_multiplier: 1.35
-    target_return: "12-25%"
+    name: Finals — Top 5 (Big Wins, Limited Losses)
+    risk_multiplier: 1.55
+    target_return: "25-40%"
     objective: maximize_return
     return_focus: true
-    discipline_halt_below: 95
+    discipline_halt_below: 88
+    daily_loss_limit_pct: 0.03
     session_symbol_filter: false
-    cycle_minutes: 8
+    cycle_minutes: 2
     include_crypto: true
-    max_new_entries_per_cycle: 3
-    max_risk_pct: 0.020
-    min_agent_confidence: 0.55
-    min_orchestrator_size_scale: 0.95
+    max_new_entries_per_cycle: 1
+    max_risk_pct: 0.026
+    min_agent_confidence: 0.65
+    min_orchestrator_size_scale: 1.15
     prioritize_by_opportunity: true
-    symbol_cooldown_minutes: 20
+    symbol_cooldown_minutes: 15
+    win_cooldown_minutes: 3
+    loss_cooldown_minutes: 20
+    momentum_cooldown_minutes: 2
     min_consensus_agents: 2
-    disabled_agents: [breakout_hunter]
+    sharpe_guard_enabled: true
+    sharpe_guard_min_r_to_close: -0.5
+    net_directional_enforce_min_gross_pct: 0.10
+    net_directional_cap: 0.85
+    disabled_agents: [breakout_hunter, sentiment_agent, mean_reversion]
     blocked_symbols: [XRP/USD, BAR/USD, EUR/GBP, USD/CHF, USD/JPY]
     enable_partial_takes: true
     enable_breakeven: true
     enable_trailing: true
-    trail_after_r: 1.75
+    trail_after_r: 2.5
+    trail_atr_mult: 2.2
     regime_flip_enabled: true
-    time_stop_m15_bars: 20
-    time_stop_bars: 20
-    time_stop_min_r: 0.25
-    partial_take_r: 1.5
-    partial_fraction: 0.25
-    breakeven_r: 0.75
-    max_adverse_r: -0.65
-    adverse_stop_m15_bars: 3
-    adverse_stop_r: -0.30
-    never_green_bars: 3
+    time_stop_m15_bars: 40
+    time_stop_bars: 40
+    time_stop_min_r: 0.15
+    partial_take_r: 3.0
+    partial_fraction: 0.12
+    breakeven_r: 0.70
+    max_hold_m15_bars: 64
+    profit_lock_m15_bars: 96
+    profit_lock_min_r: 1.5
+    max_adverse_r: -0.45
+    adverse_stop_m15_bars: 2
+    adverse_stop_r: -0.25
+    never_green_bars: 6
     never_green_peak_r: 0.05
-    never_green_max_r: -0.15
+    never_green_max_r: -0.10
     start: "2026-06-24T22:00:00+01:00"
     end: "2026-06-26T22:00:00+01:00"
 

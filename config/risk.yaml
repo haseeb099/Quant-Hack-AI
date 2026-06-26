@@ -30,9 +30,9 @@ risk:
 
   # Leverage caps
   leverage:
-    warning: 15
-    max: 20
-    hard_stop: 25
+    warning: 18
+    max: 24
+    hard_stop: 27
     competition_penalty: 28
     competition_penalty_severe: 29
 
@@ -55,7 +55,7 @@ risk:
   # Position sizing
   sizing:
     kelly_fraction: 0.5  # Half-Kelly
-    max_risk_per_trade: 0.02
+    max_risk_per_trade: 0.025
     correlation_threshold: 0.70
     max_spread_atr_ratio: 0.15
     spread_buffer_mult: 1.0

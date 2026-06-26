@@ -33,7 +33,20 @@ def main() -> int:
     ok, detail = ensure_mt5_api_enabled()
     print(f"\nConfig: {detail}")
     if not ok:
-        return 1
+        # common.ini may be locked while MT5 is running; verify live bridge before aborting
+        from src.bridges.factory import create_live_connector, connector_bridge_type
+
+        try:
+            conn = create_live_connector()
+            bridge = connector_bridge_type(conn)
+            acc = conn.get_account_info()
+            conn.close()
+            if acc.get("trade_allowed"):
+                print(f"Config write skipped (MT5 open) but live bridge OK ({bridge}) — continuing")
+            else:
+                return 1
+        except Exception:
+            return 1
 
     ok, detail = ensure_mt5_session(require_login=True)
     print(f"\nMT5 session: {'PASS' if ok else 'FAIL'} — {detail}")

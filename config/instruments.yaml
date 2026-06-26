@@ -3,14 +3,14 @@ instruments:
   - symbol: BTC/USD
     category: crypto
     bias: bearish
-    allocation: 0.14
+    allocation: 0.20
     primary_agent: trend_surfer
     active: true
 
   - symbol: ETH/USD
     category: crypto
     bias: bearish
-    allocation: 0.12
+    allocation: 0.16
     primary_agent: trend_surfer
     active: true
 
@@ -87,20 +87,20 @@ instruments:
   - symbol: USD/CHF
     category: forex
     bias: range
-    allocation: 0.01
+    allocation: 0.005
     primary_agent: mean_reversion
     active: true
 
   - symbol: EUR/GBP
     category: forex
     bias: range
-    allocation: 0.01
+    allocation: 0.005
     primary_agent: mean_reversion
     active: true
 
   - symbol: EUR/CHF
     category: forex
     bias: range
-    allocation: 0.02
+    allocation: 0.005
     primary_agent: ml_signal
     active: true

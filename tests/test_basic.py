@@ -42,7 +42,11 @@ def test_config_loads():
     assert config.current_phase == "round1"
     assert len(config.active_symbols) == 15
     assert config.phase_multiplier == 1.35
-    assert config.phase_rules.get("min_agent_confidence") == 0.40
+    assert config.phase_rules.get("min_agent_confidence") == 0.35
+    assert config.cycle_minutes() == 3
+    assert config.phase_rules.get("sharpe_guard_enabled") is False
+    assert "BTC/USD" not in config.phase_rules.get("blocked_symbols", [])
+    assert "ETH/USD" not in config.phase_rules.get("blocked_symbols", [])
 
 
 def test_feature_engine(sample_ohlcv):

@@ -100,16 +100,16 @@ def test_round1_enables_partial_takes_and_breakeven(engine) -> None:
 
 
 def test_cycle_minutes_match_phase_rules(engine) -> None:
-    assert engine.config.cycle_minutes() == 8
-    assert engine._cycle_minutes == 8
-    assert engine.state_publisher.cycle_minutes == 8
+    assert engine.config.cycle_minutes() == 3
+    assert engine._cycle_minutes == 3
+    assert engine.state_publisher.cycle_minutes == 3
 
 
 def test_publish_state_uses_phase_cycle_minutes(engine) -> None:
     from datetime import datetime, timezone
 
-    engine._cycle_minutes = 8
-    engine.state_publisher.cycle_minutes = 8
+    engine._cycle_minutes = 3
+    engine.state_publisher.cycle_minutes = 3
     cycle_start = datetime(2026, 6, 22, 12, 0, tzinfo=timezone.utc)
     engine._publish_state(cycle_start=cycle_start)
     assert engine._next_cycle_at == "2026-06-22T12:08:00+00:00"

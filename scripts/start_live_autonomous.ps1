@@ -24,6 +24,12 @@ if (Test-Path "data\engine.lock") {
     Remove-Item "data\engine.lock" -Force -ErrorAction SilentlyContinue
 }
 
+# Toggle Algo Trading toolbar before readiness (common.ini may lag while MT5 is open)
+if (Get-Process terminal64 -ErrorAction SilentlyContinue) {
+    powershell -ExecutionPolicy Bypass -File "$Root\scripts\enable_mt5_algo_trading.ps1"
+    Start-Sleep -Seconds 1
+}
+
 # MT5 readiness: API flags, bridge deploy, connectivity
 python scripts/ensure_mt5_ready.py
 if ($LASTEXITCODE -ne 0) {

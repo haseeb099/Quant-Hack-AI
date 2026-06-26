@@ -65,13 +65,57 @@ class MetaOrchestrator:
         except ImportError:
             return False
 
-    def _min_confidence(self) -> float:
+    def _min_confidence(self, context: dict[str, Any] | None = None) -> float:
+        if context and context.get("min_confidence_override") is not None:
+            return float(context["min_confidence_override"])
         return float(
             os.getenv(
                 "QUANTAI_MIN_CONFIDENCE",
                 self.config.get("min_agent_confidence", 0.65),
             )
         )
+
+    def _early_consensus_decision(
+        self,
+        features: FeatureVector,
+        signals: list[AgentSignal],
+        context: dict[str, Any] | None,
+        min_conf: float,
+    ) -> OrchestratorDecision | None:
+        """Proceed when 2+ agents agree with combined weighted confidence > 0.38."""
+        if not context or not context.get("return_focus"):
+            return None
+        regime_key = features.regime.value
+        boosts = self.regime_boosts.get(regime_key, {})
+        for direction in (Direction.BUY, Direction.SELL):
+            agreeing = [s for s in signals if s.is_actionable and s.direction == direction]
+            if len(agreeing) < 2:
+                continue
+            weighted = sum(
+                s.confidence
+                * self.agent_weights.get(s.agent_name, 0.2)
+                * boosts.get(s.agent_name, 1.0)
+                for s in agreeing
+            )
+            if weighted <= 0.38:
+                continue
+            avg_conf = sum(s.confidence for s in agreeing) / len(agreeing)
+            confidence = min(max(avg_conf, weighted), 0.92)
+            if confidence < min_conf * 0.90:
+                confidence = min(min_conf * 0.90, 0.92)
+            return OrchestratorDecision(
+                symbol=features.symbol,
+                direction=direction,
+                confidence=confidence,
+                size_scale=float(context.get("min_orchestrator_size_scale", 0.90)),
+                reasoning=(
+                    f"Early consensus {direction.value}: {len(agreeing)} agents, "
+                    f"weighted={weighted:.2f}"
+                ),
+                risk_assessment=f"Regime: {regime_key}",
+                agent_votes=signals,
+            )
+        return None
 
     @staticmethod
     def _cap_confidence_from_agents(
@@ -93,11 +137,291 @@ class MetaOrchestrator:
         ceiling = max(s.confidence for s in agreeing) + max_boost
         return min(confidence, ceiling)
 
+    @staticmethod
+    def _metal_symbols() -> frozenset[str]:
+        return frozenset({"XAU/USD", "XAG/USD"})
+
+    def _solo_ml_metal_sell_allowed(
+        self,
+        features: FeatureVector,
+        direction: Direction,
+        context: dict[str, Any] | None,
+        solo: AgentSignal,
+    ) -> bool:
+        if direction != Direction.SELL or solo.agent_name != "ml_signal":
+            return False
+        if features.symbol not in self._metal_symbols():
+            return False
+        if features.regime.value not in ("trending", "volatile"):
+            return False
+        min_c = float((context or {}).get("solo_ml_metal_sell_min_confidence") or 0.68)
+        if solo.confidence + 1e-9 < min_c:
+            return False
+        if not context or context.get("debate_winner") != "bear":
+            return False
+        debate_conf = float(context.get("debate_confidence") or 0)
+        return debate_conf + 1e-9 >= min_c * 0.85
+
+    def _solo_audit_trend_surfer_allowed(
+        self,
+        features: FeatureVector,
+        direction: Direction,
+        context: dict[str, Any] | None,
+        solo: AgentSignal,
+    ) -> bool:
+        if solo.agent_name != "trend_surfer" or solo.direction != direction:
+            return False
+        winners = frozenset(
+            (context or {}).get("audit_winner_symbols") or ["USD/CAD", "XAG/USD"],
+        )
+        if features.symbol not in winners:
+            return False
+        if features.regime.value not in ("trending", "volatile"):
+            return False
+        min_c = float((context or {}).get("audit_solo_trend_surfer_min_confidence") or 0.72)
+        return solo.confidence + 1e-9 >= min_c
+
+    def _ml_metal_sell_anchor_decision(
+        self,
+        features: FeatureVector,
+        signals: list[AgentSignal],
+        context: dict[str, Any] | None,
+    ) -> OrchestratorDecision | None:
+        """Audit-winning XAU/XAG ml SELL in trend + bear debate — beats macro/AI BUY flips."""
+        if not (context and context.get("return_focus")):
+            return None
+        if features.regime.value not in ("trending", "volatile"):
+            return None
+        ml_sells = [
+            s for s in signals
+            if s.agent_name == "ml_signal"
+            and s.is_actionable
+            and s.direction == Direction.SELL
+        ]
+        if not ml_sells:
+            return None
+        ml = max(ml_sells, key=lambda s: s.confidence)
+        if not self._solo_ml_metal_sell_allowed(features, Direction.SELL, context, ml):
+            return None
+        debate_conf = float(context.get("debate_confidence") or 0)
+        confidence = min(max(ml.confidence, debate_conf * 0.92), 0.92)
+        scale = float(context.get("min_orchestrator_size_scale") or 0.95)
+        return OrchestratorDecision(
+            symbol=features.symbol,
+            direction=Direction.SELL,
+            confidence=confidence,
+            size_scale=min(scale * 1.12, 1.45),
+            reasoning=(
+                f"ML-metal SELL anchor (audit WR): ml={ml.confidence:.2f}, "
+                f"bear debate={debate_conf:.2f}, ADX={features.adx:.0f}"
+            ),
+            risk_assessment=f"Regime: {features.regime.value}",
+            agent_votes=signals,
+        )
+
+    def _audit_winner_dual_anchor_decision(
+        self,
+        features: FeatureVector,
+        signals: list[AgentSignal],
+        context: dict[str, Any] | None,
+    ) -> OrchestratorDecision | None:
+        """trend_surfer + ml_signal agreement on audit winners in trend."""
+        if not (context and context.get("return_focus")):
+            return None
+        winners = frozenset(
+            (context or {}).get("audit_winner_symbols") or ["USD/CAD", "XAG/USD"],
+        )
+        if features.symbol not in winners:
+            return None
+        if features.regime.value not in ("trending", "volatile"):
+            return None
+        min_adx = float((context or {}).get("audit_winner_dual_min_adx") or 26)
+        if float(features.adx) + 1e-9 < min_adx:
+            return None
+        min_conf = float((context or {}).get("audit_winner_dual_min_confidence") or 0.70)
+        regime_blocks = (context or {}).get("block_direction_in_regimes") or {}
+        sym_block = regime_blocks.get(features.symbol) or {}
+        for direction in (Direction.BUY, Direction.SELL):
+            if features.regime.value in (sym_block.get(direction.value) or []):
+                continue
+            ts = next(
+                (
+                    s for s in signals
+                    if s.agent_name == "trend_surfer"
+                    and s.is_actionable
+                    and s.direction == direction
+                ),
+                None,
+            )
+            ml = next(
+                (
+                    s for s in signals
+                    if s.agent_name == "ml_signal"
+                    and s.is_actionable
+                    and s.direction == direction
+                ),
+                None,
+            )
+            if not ts or not ml:
+                continue
+            if min(ts.confidence, ml.confidence) + 1e-9 < min_conf:
+                continue
+            debate_side = "bull" if direction == Direction.BUY else "bear"
+            debate_conf = float(context.get("debate_confidence") or 0)
+            debate_ok = context.get("debate_winner") == debate_side
+            confidence = min((ts.confidence + ml.confidence) / 2 + (0.04 if debate_ok else 0), 0.92)
+            if confidence + 1e-9 < min_conf:
+                continue
+            scale = float(context.get("min_orchestrator_size_scale") or 0.95)
+            return OrchestratorDecision(
+                symbol=features.symbol,
+                direction=direction,
+                confidence=confidence,
+                size_scale=min(scale * 1.18, 1.50),
+                reasoning=(
+                    f"Audit-winner dual anchor: trend_surfer={ts.confidence:.2f} "
+                    f"+ ml={ml.confidence:.2f} in {features.regime.value}"
+                ),
+                risk_assessment=f"Regime: {features.regime.value}",
+                agent_votes=signals,
+            )
+        return None
+
+    def _prefer_winning_anchor(
+        self,
+        decision: OrchestratorDecision,
+        features: FeatureVector,
+        signals: list[AgentSignal],
+        context: dict[str, Any] | None,
+    ) -> OrchestratorDecision:
+        metal_anchor = self._ml_metal_sell_anchor_decision(features, signals, context)
+        if metal_anchor is not None:
+            if (
+                decision.direction == Direction.BUY
+                and features.symbol in self._metal_symbols()
+            ) or decision.direction == Direction.HOLD:
+                return metal_anchor
+        dual = self._audit_winner_dual_anchor_decision(features, signals, context)
+        if dual is not None and decision.direction == Direction.HOLD:
+            return dual
+        if dual is not None and decision.direction != dual.direction:
+            return dual
+        return decision
+
+    def _apply_solo_entry_policy(
+        self,
+        decision: OrchestratorDecision,
+        features: FeatureVector,
+        signals: list[AgentSignal],
+        context: dict[str, Any] | None,
+    ) -> OrchestratorDecision:
+        if decision.direction == Direction.HOLD:
+            return decision
+        if not (context and context.get("return_focus")):
+            return decision
+        agreeing = [
+            s for s in signals
+            if s.is_actionable and s.direction == decision.direction
+        ]
+        if len(agreeing) != 1:
+            return decision
+
+        solo = agreeing[0]
+        regime_key = features.regime.value
+        metal_ok = self._solo_ml_metal_sell_allowed(
+            features, decision.direction, context, solo,
+        )
+        audit_ok = self._solo_audit_trend_surfer_allowed(
+            features, decision.direction, context, solo,
+        )
+        symbol_rates = (context or {}).get("symbol_agent_win_rates") or {}
+        audit_rates = (context or {}).get("audit_agent_win_rates") or {}
+        solo_wr = symbol_rates.get(solo.agent_name) or audit_rates.get(solo.agent_name)
+        weak_solo_agents = {"momentum_pulse", "sentiment_agent", "mean_reversion"}
+
+        if (
+            solo.agent_name == "trend_surfer"
+            and regime_key in ("ranging", "calm")
+            and not audit_ok
+        ):
+            return OrchestratorDecision(
+                symbol=features.symbol,
+                direction=Direction.HOLD,
+                confidence=0.0,
+                size_scale=0.0,
+                reasoning=(
+                    f"Solo trend_surfer in {regime_key} — needs ml/partner confluence"
+                ),
+                agent_votes=signals,
+            )
+        if (
+            solo.agent_name == "ml_signal"
+            and regime_key == "trending"
+            and not metal_ok
+            and not any(
+                s.agent_name == "trend_surfer"
+                and s.is_actionable
+                and s.direction == decision.direction
+                for s in signals
+            )
+        ):
+            return OrchestratorDecision(
+                symbol=features.symbol,
+                direction=Direction.HOLD,
+                confidence=0.0,
+                size_scale=0.0,
+                reasoning="Solo ml_signal in trending — needs trend_surfer partner",
+                agent_votes=signals,
+            )
+        if solo.agent_name in weak_solo_agents and solo.confidence < 0.62:
+            return OrchestratorDecision(
+                symbol=features.symbol,
+                direction=Direction.HOLD,
+                confidence=0.0,
+                size_scale=0.0,
+                reasoning=(
+                    f"Solo {solo.agent_name} at {solo.confidence:.2f} — "
+                    "needs trend_surfer or ML partner"
+                ),
+                agent_votes=signals,
+            )
+        if solo_wr is not None and solo_wr < 0.42 and decision.confidence < 0.72:
+            return OrchestratorDecision(
+                symbol=features.symbol,
+                direction=Direction.HOLD,
+                confidence=0.0,
+                size_scale=0.0,
+                reasoning=(
+                    f"Solo {solo.agent_name} WR {solo_wr:.0%} too low for single-agent entry"
+                ),
+                agent_votes=signals,
+            )
+        if metal_ok:
+            decision.confidence = max(decision.confidence, solo.confidence)
+            decision.reasoning += "; proven solo ml metal SELL (debate-confirmed)"
+        elif audit_ok:
+            decision.confidence = max(decision.confidence, solo.confidence)
+            decision.reasoning += (
+                f"; audit-winner solo trend_surfer in {regime_key}"
+            )
+        elif solo_wr is not None and solo_wr >= 0.60:
+            decision.size_scale = min(decision.size_scale * 1.10, 1.40)
+            decision.reasoning += (
+                f"; proven {solo.agent_name} on symbol ({solo_wr:.0%} WR)"
+            )
+        return decision
+
     def _finalize_decision(
         self,
         decision: OrchestratorDecision,
         signals: list[AgentSignal],
+        features: FeatureVector | None = None,
+        context: dict[str, Any] | None = None,
     ) -> OrchestratorDecision:
+        if decision.direction != Direction.HOLD and features is not None:
+            decision = self._apply_solo_entry_policy(
+                decision, features, signals, context,
+            )
         if decision.direction == Direction.HOLD:
             return decision
         capped = self._cap_confidence_from_agents(
@@ -118,13 +442,16 @@ class MetaOrchestrator:
         context: dict[str, Any] | None = None,
     ) -> OrchestratorDecision:
         actionable = [s for s in signals if s.is_actionable]
-        min_conf = self._min_confidence()
+        min_conf = self._min_confidence(context)
 
         if not actionable or max(s.confidence for s in actionable) < min_conf:
+            early = self._early_consensus_decision(features, signals, context, min_conf)
+            if early is not None:
+                return self._finalize_decision(early, signals, features, context)
             if not (context and context.get("block_debate_fallback")):
                 debate_decision = self._debate_fallback_decision(features, signals, context, min_conf)
                 if debate_decision is not None:
-                    return self._finalize_decision(debate_decision, signals)
+                    return self._finalize_decision(debate_decision, signals, features, context)
             return OrchestratorDecision(
                 symbol=features.symbol,
                 direction=Direction.HOLD,
@@ -143,6 +470,13 @@ class MetaOrchestrator:
                 reasoning=f"Drawdown tier {drawdown_tier} — no new trades",
                 agent_votes=signals,
             )
+
+        anchor = self._ml_metal_sell_anchor_decision(features, signals, context)
+        if anchor is not None:
+            return self._finalize_decision(anchor, signals, features, context)
+        dual_anchor = self._audit_winner_dual_anchor_decision(features, signals, context)
+        if dual_anchor is not None:
+            return self._finalize_decision(dual_anchor, signals, features, context)
 
         decision: OrchestratorDecision | None = None
         skip_reason: str | None = None
@@ -167,12 +501,16 @@ class MetaOrchestrator:
                 decision.skip_reason = skip_reason
 
         if decision.direction == Direction.HOLD:
+            early = self._early_consensus_decision(features, signals, context, min_conf)
+            if early is not None:
+                return self._finalize_decision(early, signals, features, context)
             if not (context and context.get("block_debate_fallback")):
                 debate_decision = self._debate_fallback_decision(features, signals, context, min_conf)
                 if debate_decision is not None:
-                    return self._finalize_decision(debate_decision, signals)
+                    return self._finalize_decision(debate_decision, signals, features, context)
 
-        return self._finalize_decision(decision, signals)
+        decision = self._prefer_winning_anchor(decision, features, signals, context)
+        return self._finalize_decision(decision, signals, features, context)
 
     def _can_call_ai(self, symbol: str) -> bool:
         now = time.time()
@@ -236,7 +574,7 @@ class MetaOrchestrator:
     ) -> OrchestratorDecision:
         regime_key = features.regime.value
         boosts = self.regime_boosts.get(regime_key, {})
-        min_conf = self._min_confidence()
+        min_conf = self._min_confidence(context)
         return_focus = bool(context and context.get("return_focus"))
 
         buy_strengths: list[float] = []
@@ -328,36 +666,12 @@ class MetaOrchestrator:
             reasoning += f"; {len(agreeing)}-agent consensus"
             if avg_wr >= 0.55:
                 reasoning += f" (audit WR {avg_wr:.0%})"
-        elif direction != Direction.HOLD and len(agreeing) == 1 and return_focus:
+        elif direction != Direction.HOLD and len(agreeing) == 1:
             solo = agreeing[0]
-            solo_wr = symbol_rates.get(solo.agent_name) or audit_rates.get(solo.agent_name)
-            weak_solo_agents = {"momentum_pulse", "sentiment_agent", "mean_reversion"}
-            if solo.agent_name in weak_solo_agents and solo.confidence < 0.62:
-                return OrchestratorDecision(
-                    symbol=features.symbol,
-                    direction=Direction.HOLD,
-                    confidence=0.0,
-                    size_scale=0.0,
-                    reasoning=(
-                        f"Solo {solo.agent_name} at {solo.confidence:.2f} — "
-                        "needs trend_surfer or ML partner"
-                    ),
-                    agent_votes=signals,
-                )
-            if solo_wr is not None and solo_wr < 0.42 and confidence < 0.72:
-                return OrchestratorDecision(
-                    symbol=features.symbol,
-                    direction=Direction.HOLD,
-                    confidence=0.0,
-                    size_scale=0.0,
-                    reasoning=(
-                        f"Solo {solo.agent_name} WR {solo_wr:.0%} too low for single-agent entry"
-                    ),
-                    agent_votes=signals,
-                )
-            if solo_wr is not None and solo_wr >= 0.60:
-                size_scale = min(size_scale * 1.10, 1.40)
-                reasoning += f"; proven {solo.agent_name} on symbol ({solo_wr:.0%} WR)"
+            if self._solo_ml_metal_sell_allowed(features, direction, context, solo):
+                confidence = max(confidence, solo.confidence)
+            elif self._solo_audit_trend_surfer_allowed(features, direction, context, solo):
+                confidence = max(confidence, solo.confidence)
 
         tier = (context or {}).get("symbol_tier", "B")
         if direction != Direction.HOLD and tier == "A" and confidence >= 0.62:
@@ -486,9 +800,15 @@ class MetaOrchestrator:
                     size_scale *= 0.85
                     note = "; macro risk-off but low ADX — reduced crypto short"
             elif is_metal and direction == Direction.BUY:
-                confidence = min(confidence * 1.08, 1.0)
-                size_scale = min(size_scale * 1.08, 1.5)
-                note = "; risk-off safe-haven metals boost"
+                ml_sell_conf = float((context or {}).get("ml_metal_sell_confidence") or 0)
+                if ml_sell_conf >= 0.68 and (context or {}).get("debate_winner") == "bear":
+                    confidence *= 0.55
+                    size_scale *= 0.50
+                    note = "; macro metal long suppressed — ml+debate favor SELL"
+                else:
+                    confidence = min(confidence * 1.08, 1.0)
+                    size_scale = min(size_scale * 1.08, 1.5)
+                    note = "; risk-off safe-haven metals boost"
             elif (is_fx or is_metal) and direction == Direction.BUY:
                 confidence *= 0.85
                 size_scale *= 0.85
@@ -515,16 +835,39 @@ class MetaOrchestrator:
         signals: list[AgentSignal],
         context: dict[str, Any] | None = None,
     ) -> str:
+        return_focus = bool(context and context.get("return_focus"))
+        min_scale = float((context or {}).get("min_orchestrator_size_scale") or 1.0)
+        dd_tier = str((context or {}).get("risk_tier") or "normal")
         prompt_parts = [
+            "COMPETITION CONTEXT: This is a 24-hour trading round. "
+            "The scoring formula weights return at 70%, drawdown at 15%, Sharpe at 10%, "
+            "and risk discipline at 5%. Your job is to maximise return rank. "
+            "When agents disagree but 2+ agree on direction with confidence above 0.38, "
+            "prefer the trade over HOLD. Only recommend HOLD when signals are genuinely "
+            "contradictory or below 0.32 confidence. Do not be conservative.",
+            f"Current drawdown tier: {dd_tier} — be aggressive at Normal/Elevated, "
+            "more cautious at Warning/Critical.",
             "You are the MetaOrchestrator for an AI trading competition ($1M account).",
             "Final Score = 70% Return Rank + 15% Drawdown Rank + 10% Sharpe Rank + 5% Discipline.",
-            "Top competitors earn +$40k–$100k with 55–85% win rate — prioritize high-quality entries over churn.",
-            "Take high-conviction trades on proven symbols (XAG, USD/CAD, AUD/USD). "
+        ]
+        if return_focus:
+            prompt_parts.extend([
+                "FINALS TOP-5 PUSH: Final Score = 70% Return Rank + 15% DD Rank + 10% Sharpe + 5% Discipline.",
+                f"You MUST use size_scale {min_scale:.2f}–1.50 on every approved trade. Return rank dominates top-5.",
+                "Target 25-40% round return. Cut losers fast — do not let trades run to big losses.",
+                "Rules: margin <88%, leverage <24x, single-symbol <40%, daily loss halt 3%, stop-out 30%.",
+                "Prioritize quality: USD/CAD, XAG/USD, AUD/USD, XAU/USD, BTC/ETH/SOL — FULL size or HOLD.",
+            ])
+        else:
+            prompt_parts.append(
+                "Top competitors earn +$40k–$100k — prioritize high-quality entries over churn."
+            )
+        prompt_parts.extend([
             "In risk-off: LONG metals (XAU/XAG), SHORT EUR/AUD/crypto — never short gold into safe-haven flows.",
-            "Stay within rules: max ~15% drawdown, margin <88%, leverage <20x, no discipline violations.",
+            "Stay within rules: max ~12% drawdown, margin <88%, leverage <24x, concentration <40%, discipline 100.",
             f"Symbol: {features.symbol}, Regime: {features.regime.value}",
             f"ADX: {features.adx:.1f}, RSI: {features.rsi_14:.1f}, ATR: {features.atr_14:.4f}",
-        ]
+        ])
         for sig in signals:
             prompt_parts.append(
                 f"Agent {sig.agent_name}: {sig.direction.value} conf={sig.confidence:.2f} — {sig.reasoning}"
@@ -612,10 +955,18 @@ class MetaOrchestrator:
         from pydantic import BaseModel, Field, field_validator
         from pydantic_ai import Agent
 
+        return_focus = bool(context and context.get("return_focus"))
+        scale_floor = float((context or {}).get("min_orchestrator_size_scale") or (1.05 if return_focus else 0.5))
+        scale_ceiling = 1.50 if return_focus else 1.5
+
         class AIDecision(BaseModel):
             direction: str = Field(description="BUY, SELL, or HOLD")
             confidence: float = Field(ge=0, le=1)
-            size_scale: float = Field(ge=0.5, le=1.5, default=1.0)
+            size_scale: float = Field(
+                ge=scale_floor,
+                le=scale_ceiling,
+                default=scale_floor if return_focus else 1.0,
+            )
             reasoning: str = ""
             risk_assessment: str = ""
 
@@ -641,9 +992,9 @@ class MetaOrchestrator:
             @classmethod
             def clamp_size_scale(cls, value: Any) -> float:
                 try:
-                    return max(0.5, min(1.5, float(value)))
+                    return max(scale_floor, min(scale_ceiling, float(value)))
                 except (TypeError, ValueError):
-                    return 1.0
+                    return scale_floor if return_focus else 1.0
 
         from src.utils.llm_providers import (
             anthropic_llm_allowed,
@@ -691,6 +1042,8 @@ class MetaOrchestrator:
                 )
                 decision.confidence = macro_conf
                 decision.size_scale = macro_scale
+                if return_focus and decision.direction != Direction.HOLD:
+                    decision.size_scale = max(decision.size_scale, scale_floor)
                 if macro_note:
                     decision.reasoning += macro_note
                 return decision

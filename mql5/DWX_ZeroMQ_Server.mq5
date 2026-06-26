@@ -161,6 +161,14 @@ string HandleTrade(string json, ulong start_ms)
          return BuildError("Symbol not found: " + symbol, start_ms);
    }
 
+   if(type == "BUY" || type == "SELL")
+   {
+      if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
+         return BuildError("AutoTrading disabled in MT5 toolbar", start_ms);
+      if(!MQLInfoInteger(MQL_TRADE_ALLOWED))
+         return BuildError("Live trading not allowed for this EA", start_ms);
+   }
+
    MqlTradeRequest req = {};
    MqlTradeResult  res = {};
    req.symbol   = mt5_symbol;
@@ -315,6 +323,9 @@ string HandleTrade(string json, ulong start_ms)
       {
          req.action = TRADE_ACTION_DEAL;
          req.type = (type == "BUY") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+         req.price = (type == "BUY")
+            ? SymbolInfoDouble(mt5_symbol, SYMBOL_ASK)
+            : SymbolInfoDouble(mt5_symbol, SYMBOL_BID);
       }
       if(sl > 0) req.sl = sl;
       if(tp > 0) req.tp = tp;
