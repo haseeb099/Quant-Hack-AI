@@ -1606,6 +1606,27 @@ class TradingEngine:
             return equity if equity > 0 else getattr(self, "_initial_equity", 1_000_000.0)
         return 1_000_000.0
 
+    def _sizing_equity(self, equity: float, account: dict | None = None) -> float:
+        """Cap risk sizing when platform equity overstates deployable capital."""
+        cap_raw = os.getenv("SIZING_EQUITY_CAP", "").strip()
+        if cap_raw:
+            try:
+                cap = float(cap_raw)
+                if cap > 0:
+                    return min(equity, cap)
+            except ValueError:
+                pass
+        if account:
+            balance = account.get("balance")
+            if balance is not None and float(balance) > 0 and float(balance) < equity * 0.25:
+                logger.warning(
+                    "Sizing equity capped to balance %.2f (platform equity %.2f)",
+                    float(balance),
+                    equity,
+                )
+                return float(balance)
+        return equity
+
     def _maybe_refresh_phase(self) -> None:
         """Auto-switch competition phase by BST schedule."""
         if not self._auto_phase:
@@ -3481,6 +3502,12 @@ class TradingEngine:
         context["solo_ml_metal_sell_min_confidence"] = live_filters.get(
             "solo_ml_metal_sell_min_confidence",
         )
+        context["solo_ml_metal_sell_trending_min_confidence"] = live_filters.get(
+            "solo_ml_metal_sell_trending_min_confidence",
+        )
+        context["solo_ml_metal_sell_volatile_min_confidence"] = live_filters.get(
+            "solo_ml_metal_sell_volatile_min_confidence",
+        )
         context["audit_winner_symbols"] = live_filters.get(
             "audit_winner_symbols",
         ) or ["USD/CAD", "XAG/USD"]
@@ -3646,6 +3673,10 @@ class TradingEngine:
                 )
                 and debate_confirms
             )
+            trend_ml_min = live_filters.get("solo_ml_metal_sell_trending_min_confidence")
+            if solo_metal_sell_ok and primary_features.regime.value == "trending" and trend_ml_min is not None:
+                if ml_solo_conf + 1e-9 < float(trend_ml_min):
+                    solo_metal_sell_ok = False
             audit_winners = frozenset(
                 live_filters.get("audit_winner_symbols") or ["USD/CAD", "XAG/USD"],
             )
@@ -3710,6 +3741,13 @@ class TradingEngine:
                     adx=primary_features.adx,
                     regime=primary_features.regime.value,
                 )
+            _micro_cfg = self.config.risk.get("micro", {})
+            if (
+                self.account_profile
+                and self.account_profile.kind == "micro"
+                and _micro_cfg.get("disable_size_boosts")
+            ):
+                active_size_boost = None
         else:
             active_size_boost = None
             solo_metal_sell_ok = False
@@ -3826,6 +3864,43 @@ class TradingEngine:
                 })
                 return False
 
+        if (
+            self._is_metal_symbol(symbol)
+            and decision.direction.value == "BUY"
+            and agreeing == 1
+            and all(
+                getattr(s, "agent_name", "") == "trend_surfer"
+                for s in signals
+                if s.is_actionable and s.direction == decision.direction
+            )
+        ):
+            skip = (
+                "Metal BUY blocked — solo trend_surfer long "
+                "(audit-winning metal path is ml SELL / dual confirm)"
+            )
+            self.trade_logger.log(
+                symbol=symbol,
+                regime=primary_features.regime.value,
+                session=session_name,
+                direction=decision.direction.value,
+                confidence=decision.confidence,
+                agent_votes=decision.agent_votes,
+                status="skipped",
+                reasoning=skip,
+            )
+            self._cycle_decisions.append({
+                "symbol": symbol,
+                "direction": decision.direction.value,
+                "confidence": decision.confidence,
+                "regime": primary_features.regime.value,
+                "session": session_name,
+                "reasoning": decision.reasoning,
+                "agent_votes": vote_summary,
+                "status": "skipped",
+                "skip_reason": skip,
+            })
+            return False
+
         min_confidence = live_filters.get("min_confidence")
         sym_conf = (live_filters.get("symbol_min_confidence") or {}).get(symbol)
         if sym_conf is not None:
@@ -3933,6 +4008,7 @@ class TradingEngine:
             ml_only_min is not None
             and decision.direction.value != "HOLD"
             and not a_plus_ok
+            and not solo_metal_sell_ok
         ):
             actionable = [s for s in signals if s.is_actionable and s.direction == decision.direction]
             non_ml = [s for s in actionable if s.agent_name != "ml_signal"]
@@ -4379,7 +4455,8 @@ class TradingEngine:
                 )
                 return False
         elif instrument_bias == "bullish" and decision.direction.value == "SELL":
-            if decision.confidence < bullish_short_min:
+            bias_solo_exempt = solo_metal_sell_ok or audit_solo_trend_surfer_ok
+            if not bias_solo_exempt and decision.confidence < bullish_short_min:
                 decision_record["status"] = "skipped"
                 decision_record["skip_reason"] = (
                     f"Instrument bias {instrument_bias} — short requires confidence >= {bullish_short_min:.2f}"
@@ -4693,7 +4770,11 @@ class TradingEngine:
 
         allocation = self.config.allocation_for(symbol)
         micro_cfg = self.config.risk.get("micro", {})
-        if self.account_profile and self.account_profile.kind == "micro":
+        sizing_equity = self._sizing_equity(equity)
+        if sizing_equity + 1e-9 < equity * 0.25:
+            active_size_boost = None
+            max_risk_pct = float(micro_cfg.get("max_risk_per_trade", 0.006)) * allocation
+        elif self.account_profile and self.account_profile.kind == "micro":
             max_risk_pct = micro_cfg.get("max_risk_per_trade", 0.005) * allocation
         else:
             base_max_risk = phase_rules.get("max_risk_pct", self.config.max_risk_pct())
@@ -4716,7 +4797,7 @@ class TradingEngine:
                 specs["contract_size"],
                 primary_features.close,
             )
-            if min_notional > equity * max_notional_pct:
+            if min_notional > sizing_equity * max_notional_pct:
                 logger.info(
                     "Min lot notional %.4f exceeds %.0f%% equity cap for %s — skipping",
                     min_notional,
@@ -4770,7 +4851,7 @@ class TradingEngine:
                 reward_risk_ratio = max(reward_dist / risk_dist, 0.1)
 
         size = self.kelly_sizer.compute_size(
-            equity=equity,
+            equity=sizing_equity,
             win_rate=win_rate,
             reward_risk_ratio=reward_risk_ratio,
             atr_14=primary_features.atr_14,
@@ -4783,9 +4864,22 @@ class TradingEngine:
             leverage_haircut=margin_state.leverage_haircut,
             margin_size_multiplier=margin_state.size_multiplier * self._size_multiplier,
             max_risk_override=max_risk_pct,
-            competition_mode=self.config.current_phase in ("round1", "round2", "round3", "finals"),
-            competition_mode_boost=float(
-                self.config.phase_rules.get("competition_mode_boost", 1.4),
+            competition_mode=(
+                self.config.current_phase in ("round1", "round2", "round3", "finals")
+                and not (
+                    self.account_profile
+                    and self.account_profile.kind == "micro"
+                    and micro_cfg.get("disable_competition_mode_boost")
+                )
+            ),
+            competition_mode_boost=(
+                1.0
+                if (
+                    self.account_profile
+                    and self.account_profile.kind == "micro"
+                    and micro_cfg.get("disable_competition_mode_boost")
+                )
+                else float(self.config.phase_rules.get("competition_mode_boost", 1.4))
             ),
         )
 
@@ -4798,7 +4892,7 @@ class TradingEngine:
 
         if lots > 0 and not self.simulation:
             lots = self._cap_lots_to_concentration(
-                symbol, lots, notional_price, equity, open_positions,
+                symbol, lots, notional_price, sizing_equity, open_positions,
             )
             max_fx_lots = live_filters.get("max_fx_lots")
             if active_size_boost and active_size_boost.get("max_fx_lots") is not None:
@@ -4815,6 +4909,13 @@ class TradingEngine:
                 max_metal_lots = active_size_boost["max_metal_lots"]
             if max_metal_lots is not None and self._is_metal_symbol(symbol):
                 lots = min(lots, float(max_metal_lots))
+            if self.account_profile and self.account_profile.kind == "micro":
+                micro_metal_cap = micro_cfg.get("max_metal_lots")
+                if micro_metal_cap is not None and self._is_metal_symbol(symbol):
+                    lots = min(lots, float(micro_metal_cap))
+                micro_fx_cap = micro_cfg.get("max_fx_lots")
+                if micro_fx_cap is not None and self._is_fx_symbol(symbol):
+                    lots = min(lots, float(micro_fx_cap))
 
         if lots <= 0 and not self.simulation and specs:
             bump_key = None

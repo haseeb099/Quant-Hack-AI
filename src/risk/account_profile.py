@@ -10,7 +10,8 @@ ProfileKind = Literal["competition", "practice", "micro"]
 
 COMPETITION_EQUITY_MIN = 500_000.0
 COMPETITION_EQUITY_MAX = 2_000_000.0
-MICRO_EQUITY_MAX = 100.0
+# Accounts below this use micro risk caps (strict sizing, no competition boosts).
+MICRO_EQUITY_MAX = 50_000.0
 PRACTICE_EQUITY_MAX = 500_000.0
 
 
@@ -39,6 +40,13 @@ def detect_profile(equity: float, override: str | None = None) -> AccountProfile
 
     if env_override in ("competition", "practice", "micro"):
         kind: ProfileKind = env_override  # type: ignore[assignment]
+        if (
+            kind == "competition"
+            and equity > 0
+            and not (COMPETITION_EQUITY_MIN <= equity <= COMPETITION_EQUITY_MAX)
+        ):
+            # Forced competition on a non-platform balance → micro caps to prevent oversizing.
+            kind = "micro"
     elif equity < MICRO_EQUITY_MAX:
         kind = "micro"
     elif COMPETITION_EQUITY_MIN <= equity <= COMPETITION_EQUITY_MAX:

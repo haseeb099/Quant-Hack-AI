@@ -78,7 +78,11 @@ risk:
     safe_harbor_rate: 500
     single_account: true
 
-  # Micro account overrides (equity < $100) — competition constitution unchanged
+  # Small account overrides (equity < $50k) — competition constitution unchanged
   micro:
-    max_risk_per_trade: 0.005
-    max_position_notional_pct: 0.25
+    max_risk_per_trade: 0.006
+    max_position_notional_pct: 0.08
+    max_metal_lots: 0.10
+    max_fx_lots: 0.50
+    disable_size_boosts: true
+    disable_competition_mode_boost: true

@@ -23,7 +23,7 @@ VOLUME_EPS = 1e-4
 DEFAULT_TIMEOUT_MS = 10000
 DATA_TIMEOUT_MS = int(os.getenv("ZMQ_DATA_TIMEOUT_MS", "15000"))
 TRADE_TIMEOUT_MS = int(os.getenv("ZMQ_TRADE_TIMEOUT_MS", "60000"))
-TRADE_ACK_TIMEOUT_MS = int(os.getenv("ZMQ_TRADE_ACK_TIMEOUT_MS", "12000"))
+TRADE_ACK_TIMEOUT_MS = int(os.getenv("ZMQ_TRADE_ACK_TIMEOUT_MS", "30000"))
 MAX_RECONNECT_ATTEMPTS = 3
 TRADE_MAX_RETRIES = 3
 ZMQ_WARMUP_SEC = float(os.getenv("ZMQ_WARMUP_SEC", "2.0"))
@@ -93,6 +93,7 @@ class ZeroMQConnector:
         self._pull_socket: Any = None
         self._sub_socket: Any = None
         self._io_lock = threading.RLock()
+        self._direct_fallback: Any | None = None
 
     def _open_sockets(self) -> bool:
         import zmq
@@ -288,7 +289,7 @@ class ZeroMQConnector:
             drain_stale = expected_action != "TRADE"
 
         original_rcv_timeout = self._pull_socket.getsockopt(zmq.RCVTIMEO)
-        trade_timeout = max(self.timeout_ms, TRADE_ACK_TIMEOUT_MS)
+        trade_timeout = max(self.timeout_ms, TRADE_ACK_TIMEOUT_MS, TRADE_TIMEOUT_MS // 2)
         if expected_action == "TRADE":
             drained = self._drain_stale_before_trade()
             if drained:
@@ -749,6 +750,37 @@ class ZeroMQConnector:
         latest = max(matching, key=lambda p: int(p.get("time", 0) or 0))
         return int(latest.get("ticket", order_ticket) or order_ticket)
 
+    def _direct_trade_fallback(
+        self,
+        symbol: str,
+        direction: str,
+        volume: float,
+        sl: float | None,
+        tp: float | None,
+    ) -> dict[str, Any] | None:
+        """Use MT5 Python API when ZMQ TRADE ack is lost but terminal can execute."""
+        from src.bridges.mt5_direct_connector import Mt5DirectConnector
+
+        if self._direct_fallback is None:
+            self._direct_fallback = Mt5DirectConnector()
+            if not self._direct_fallback.connect():
+                logger.warning(
+                    "MT5 direct fallback unavailable: %s",
+                    self._direct_fallback.last_error,
+                )
+                return None
+        result = self._direct_fallback.send_trade(
+            symbol, direction, volume, sl=sl, tp=tp,
+        )
+        if result.get("status") == "ok":
+            logger.warning(
+                "ZMQ TRADE failed — executed %s %s vol=%.4f via MT5 direct API",
+                direction,
+                symbol,
+                volume,
+            )
+        return result
+
     def send_trade(
         self,
         symbol: str,
@@ -792,6 +824,10 @@ class ZeroMQConnector:
             command["limit_price"] = limit_price
 
         result = self._send_with_retry(command)
+        if result.get("status") != "ok" and direction.upper() in ("BUY", "SELL"):
+            fallback = self._direct_trade_fallback(symbol, direction, volume, sl, tp)
+            if fallback is not None and fallback.get("status") == "ok":
+                result = fallback
         if result.get("status") == "ok" and direction.upper() in ("BUY", "SELL"):
             pos_ticket = self._resolve_position_ticket(symbol, int(result.get("ticket", 0) or 0))
             if pos_ticket:

@@ -157,6 +157,14 @@ class MetaOrchestrator:
         min_c = float((context or {}).get("solo_ml_metal_sell_min_confidence") or 0.68)
         if solo.confidence + 1e-9 < min_c:
             return False
+        if features.regime.value == "trending":
+            trend_min = (context or {}).get("solo_ml_metal_sell_trending_min_confidence")
+            if trend_min is not None and solo.confidence + 1e-9 < float(trend_min):
+                return False
+        elif features.regime.value == "volatile":
+            vol_min = (context or {}).get("solo_ml_metal_sell_volatile_min_confidence")
+            if vol_min is not None and solo.confidence + 1e-9 < float(vol_min):
+                return False
         if not context or context.get("debate_winner") != "bear":
             return False
         debate_conf = float(context.get("debate_confidence") or 0)
